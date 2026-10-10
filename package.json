@@ -1,0 +1,71 @@
+{
+  "name": "wb-desktop",
+  "private": true,
+  "version": "0.2.0",
+  "packageManager": "pnpm@11.7.0",
+  "description": "WorkBuddy/CodeBuddy 账号管理桌面工具（Electron 便携版，内置本地模型网关）",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "workbuddy",
+    "codebuddy",
+    "electron",
+    "account-manager",
+    "ai-gateway",
+    "windows"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node build.mjs && electron dist/main.cjs",
+    "serve": "tsx src/main.ts",
+    "serve:watch": "tsx watch src/main.ts",
+    "test": "vitest run",
+    "dist": "node build.mjs && electron-builder --win portable",
+    "icon": "node make-icon.mjs"
+  },
+  "devDependencies": {
+    "electron": "^37.6.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.2.0"
+  },
+  "main": "dist/main.cjs",
+  "productName": "WorkBuddy Account Hub",
+  "author": "wb-hub",
+  "build": {
+    "appId": "com.wbhub.wbdesktop",
+    "productName": "WorkBuddy Account Hub",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/main.cjs",
+      "dist/backend.cjs",
+      "build/icon.ico"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "wb-desktop-portable.exe"
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "npmRebuild": false
+  }
+}

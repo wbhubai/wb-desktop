@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: true
+  electron: true
+  electron-builder: true
+  app-builder-bin: true
+  electron-winstaller: true
+  electron-packager: true
+  summarize-license: true
+overrides:
+  '@electron/get': 5.1.0

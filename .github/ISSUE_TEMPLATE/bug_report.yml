@@ -1,0 +1,50 @@
+name: Bug 报告
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索已有 Issue 避免重复。
+        **注意：日志与截图中可能包含账号邮箱、token、虚拟 Key，提交前请务必脱敏。**
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 便携版 exe 的版本号（或 git commit）
+      placeholder: 例如 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象描述
+      description: 发生了什么？期望发生什么？
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动 wb-desktop-portable.exe
+        2. 点击「…」
+        3. 出现「…」
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志（已脱敏）
+      description: `~/.wb-hub/logs/` 下的相关日志，或网关用量记录中的错误条目

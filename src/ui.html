@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>WorkBuddy 账号助手</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1115; --card:#171a21; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a5; --acc:#4f8cff; --ok:#3fb96f; --err:#e5604f; --warn:#e0a53f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 "Segoe UI",system-ui,sans-serif; }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .muted { color:var(--dim); font-size:12px; }
+  .status { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--ok); flex:none; }
+  .dot.off { background:#59627a; }
+  .dot.err { background:var(--err); }
+  nav.tabs { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line); display:flex; gap:6px; padding:0 20px; }
+  .tab-btn { background:none; border:none; border-bottom:2px solid transparent; color:var(--dim); padding:10px 14px; font-size:14px; cursor:pointer; }
+  .tab-btn:hover { color:var(--fg); }
+  .tab-btn.active { color:var(--fg); border-bottom-color:var(--acc); font-weight:600; }
+  main { padding:20px; max-width:960px; margin:0 auto; }
+  .tab-page { display:none; }
+  .tab-page.active { display:block; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  .card h3 { margin:0 0 10px; font-size:14px; color:var(--dim); font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button.act { background:var(--acc); border:none; color:#fff; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+  button.ghost { background:none; border:1px solid var(--line); color:var(--fg); padding:5px 12px; border-radius:6px; cursor:pointer; }
+  input,select { background:#0d0f13; border:1px solid var(--line); color:var(--fg); padding:6px 10px; border-radius:6px; font-size:13px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; }
+  .tag.ok { background:#173527; color:var(--ok); }
+  .tag.err { background:#3a1d1a; color:var(--err); }
+  .tag.warn { background:#3a2f16; color:var(--warn); }
+  pre { background:#0d0f13; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:360px; font-size:12px; }
+  .kpis { display:flex; gap:12px; flex-wrap:wrap; }
+  .kpi { flex:1; min-width:150px; background:#0d0f13; border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .kpi b { display:block; font-size:20px; }
+  .kpi span { color:var(--dim); font-size:12px; }
+  .soon { color:var(--warn); } .expired { color:var(--err); }
+  details { margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }
+  details summary { cursor:pointer; color:var(--fg); font-size:13px; user-select:none; }
+  details summary::before { content:'▸ '; color:var(--dim); }
+  details[open] summary::before { content:'▾ '; }
+  tr[data-runlog],tr[data-oplog] { cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WorkBuddy 账号助手</h1>
+  <div class="status" id="runStatus" title="正在获取运行状态…">
+    <span class="dot" id="statusDot"></span><span id="statusText">检测中…</span>
+  </div>
+</header>
+<nav class="tabs">
+  <button class="tab-btn" data-act="tab" data-tab="accounts">账号助手</button>
+  <button class="tab-btn" data-act="tab" data-tab="gateway">网关代理</button>
+  <button class="tab-btn" data-act="tab" data-tab="logs">操作日志</button>
+</nav>
+<main>
+  <section class="tab-page" id="tab-accounts">
+    <div class="card">
+      <div class="row" style="justify-content:space-between; margin-bottom:10px">
+        <h3 style="margin:0">账号库</h3>
+        <div class="row">
+          <select id="wbVariant"><option value="cn">国内版 (cn)</option><option value="ai">国际版 (ai)</option></select>
+          <button class="act" data-act="login-start">扫码登录</button>
+          <span class="muted" id="wbLoginState"></span>
+        </div>
+      </div>
+      <div id="wbAccounts"></div>
+      <div class="row" style="margin-top:8px">
+        <span>手动操作：</span>
+        <button class="act" data-act="credits">刷新积分</button>
+      </div>
+      <div id="wbCredits" class="kpis" style="margin-top:10px"></div>
+    </div>
+    <div class="card"><h3>签到 <span class="muted">— 勾选「自动执行」并保存后，后台每日为所有账号自动签到（可在高级里设置时间窗错峰）；手动按钮是一次性操作，不受勾选影响</span></h3>
+      <div id="wbCheckinCfg"></div>
+      <div class="row" style="margin-top:8px">
+        <span>手动操作：</span>
+        <button class="act" data-act="checkin-run">立即签到一轮</button><span class="muted wbstate" data-state="checkin"></span>
+      </div>
+    </div>
+    <div class="card"><h3>猫猫旅行 <span class="muted">— 勾选「自动执行」并保存后，后台每 30 分钟自动派猫、每 15 分钟自动领取；手动按钮是一次性操作，不受勾选影响</span></h3>
+      <div class="row">
+        <label><input type="checkbox" id="wbTravelEnabled"> 自动执行</label>
+        <span class="tag err" id="trState">自动：关</span>
+        <button class="ghost" data-act="travel-save">保存自动配置</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span>手动操作：</span>
+        <button class="act" data-act="travel-run">立即派猫</button><span class="muted wbstate" data-state="travel"></span>
+        <button class="act" data-act="travel-claim">立即领取</button>
+        <button class="act" data-act="travel-refresh">刷新状态</button>
+      </div>
+      <div id="wbTravel" style="margin-top:8px"></div>
+    </div>
+  </section>
+  <section class="tab-page" id="tab-gateway">
+    <div class="card"><h3>连接与账号</h3>
+      <div class="row">
+        <span class="muted">虚拟 Key</span>
+        <input id="gwKey" style="flex:1" readonly>
+        <button class="ghost" data-act="gw-key-copy">复制</button>
+        <button class="ghost" data-act="gw-key-rotate">重置</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted">模型清单</span>
+        <input id="gwModels" style="flex:1" placeholder="逗号分隔的模型 ID">
+        <button class="ghost" data-act="gw-models-save">保存模型</button>
+        <button class="ghost" data-act="gw-models-refresh">刷新（探测官方可用性）</button>
+      </div>
+      <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted">使用账号</span>
+        <select id="gwAccount" style="min-width:200px"></select>
+        <span class="muted">思考</span>
+        <select id="gwThinking">
+          <option value="default">默认</option>
+          <option value="disabled">关闭</option>
+        </select>
+        <button class="act" id="gwSaveAccountBtn" data-act="gw-account-save">保存</button>
+      </div>
+      <p class="muted" style="margin-top:8px">
+        接入：baseURL <code id="gwBaseHint">http://127.0.0.1:3081/v1</code>（OpenAI 格式 /chat/completions，或 Anthropic 格式 /v1/messages），API Key 填上方虚拟 Key。积分按官方口径从所选账号实时扣除（与 App 内一致）。可用模型以「模型清单」为准（/v1/models）。
+      </p>
+      <p class="muted" id="gwLanHint" style="margin-top:4px"></p>
+      <details>
+        <summary>高级：签名改写（11128 防御）</summary>
+        <div class="muted" style="margin-top:6px">命中下表匹配句的提示内容，会被语义等价改写后转发给上游。</div>
+        <div class="row" style="margin-top:6px">
+          <button class="ghost" data-act="gw-sig-reset">恢复默认</button>
+        </div>
+        <div id="gwSignatures" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:6px">
+          <input id="gwSigMatch" style="flex:2" placeholder="匹配句（客户端系统提示中的原文）">
+          <input id="gwSigReplacement" style="flex:1" placeholder="改写为（语义等价）">
+          <button class="act" data-act="gw-sig-add">添加</button>
+        </div>
+      </details>
+    </div>
+    <div class="card"><h3>调用统计</h3>
+      <div class="row">
+        <button class="ghost" id="gwUsageRefreshBtn" data-act="gw-usage-refresh">刷新统计</button>
+        <span class="muted" id="gwUsageState"></span>
+      </div>
+      <div id="gwUsage" style="margin-top:8px"></div>
+    </div>
+  </section>
+  <section class="tab-page" id="tab-logs">
+    <div class="card"><h3>运行日志 <span class="muted">— 后台签到/旅行/保活与请求处理的事件流（内存最近 200 条，点击行查看详情）</span></h3>
+      <div class="row">
+        <button class="ghost" data-act="logs-refresh">刷新</button>
+        <label class="muted"><input type="checkbox" id="logsAuto"> 每 30 秒自动刷新</label>
+      </div>
+      <div id="runLogs" style="margin-top:8px"></div>
+    </div>
+    <div class="card"><h3>操作输出 <span class="muted">— 点各卡片操作按钮产生的结果（点击行查看完整详情）</span></h3>
+      <div id="wbLogs" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+<script>
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const t = await r.text();
+  try { return JSON.parse(t); } catch { return { raw: t, status: r.status }; }
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function wbState(text, scope) { if (!scope) return; document.querySelectorAll('.wbstate[data-state="' + scope + '"]').forEach(el => { el.textContent = text; }); }
+const OUTCOME_LABELS = { claimed: '领取成功', dispatched: '派发成功', waiting: '途中', arrived: '待领取', 'already-traveling': '已在途中', 'daily-limit': '今日上限', idle: '无行程', 'no-action': '无动作', skipped: '跳过', success: '成功', already: '已签过', inactive: '未开放', error: '失败' };
+function summarizeOutcome(label, r) {
+  const rows = Array.isArray(r?.accounts) ? r.accounts : null;
+  if (!rows || rows.length === 0) return String(r.status || (r.ok === true ? 'ok' : 'done'));
+  const counts = {};
+  for (const row of rows) {
+    const key = row.outcome || (row.result ?? 'unknown');
+    const name = OUTCOME_LABELS[key] || key;
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  const parts = Object.entries(counts).map(([name, n]) => n + ' 个' + name);
+  return parts.join('，');
+}
+async function wbAction(label, path, body) {
+  const scope = label === '签到' ? 'checkin' : (label === '旅行配置' || label === '派猫' || label === '领取' || label === '状态刷新') ? 'travel' : 'misc';
+  wbState(label + '：执行中…', scope);
+  try {
+    const r = await api(path, 'POST', body ?? {});
+    wbState(label + '：' + summarizeOutcome(label, r) + '（详情见「操作日志」页签）', scope);
+    pushOpLog(label, r);
+    loadWb();
+    loadStatus();
+    return r;
+  } catch (e) { wbState(label + '：请求失败', scope); pushOpLog(label + '：请求失败', String(e)); return null; }
+}
+
+/* ── 标签页 ── */
+const TAB_IDS = ['accounts', 'gateway', 'logs'];
+function currentTab() { try { return localStorage.getItem('wb-tab') || 'accounts'; } catch { return 'accounts'; } }
+function switchTab(tab) {
+  if (!TAB_IDS.includes(tab)) tab = 'accounts';
+  document.querySelectorAll('.tab-btn[data-act="tab"]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+  try { localStorage.setItem('wb-tab', tab); } catch {}
+  if (tab === 'logs') loadRunLogs();
+}
+
+/* ── 头部运行状态 ── */
+async function loadStatus() {
+  try {
+    const s = await api('/status');
+    const dot = document.getElementById('statusDot');
+    const lanOn = Boolean(s.lan);
+    dot.classList.toggle('off', !lanOn);
+    dot.classList.remove('err');
+    document.getElementById('statusText').textContent = '运行中 · 本地 ' + s.localPort + ' · ' + (lanOn ? '局域网 ' + s.lan.port + ' 已开启' : '局域网未开启');
+    document.getElementById('runStatus').title = lanOn && (s.lan.hosts || []).length
+      ? '内网接入地址：' + s.lan.hosts.map(h => 'http://' + h + ':' + s.lan.port + '/v1').join(' 或 ')
+      : '如需局域网设备接入，启动时设置 WB_LAN_PORT（默认 9527，设为 0 关闭）';
+    document.getElementById('gwBaseHint').textContent = 'http://127.0.0.1:' + s.localPort + '/v1';
+  } catch (e) {
+    const dot = document.getElementById('statusDot');
+    dot.classList.add('err');
+    document.getElementById('statusText').textContent = '状态获取失败';
+  }
+}
+function startStatusPolling() {
+  loadStatus();
+  setInterval(() => { loadStatus(); }, 30000);
+}
+
+/* ── 运行日志（列表 + 点行看详情） ── */
+let runLogEntries = [];
+function levelTag(level) {
+  return '<span class="tag ' + (level === 'error' ? 'err' : level === 'warn' ? 'warn' : '') + '">' + esc(level || 'info') + '</span>';
+}
+async function loadRunLogs() {
+  try {
+    const r = await api('/logs');
+    runLogEntries = r.logs || [];
+    renderRunLogList();
+  } catch (e) { document.getElementById('runLogs').innerHTML = '<span class="muted">加载失败: ' + esc(String(e)) + '</span>'; }
+}
+function renderRunLogList() {
+  const box = document.getElementById('runLogs');
+  if (!Array.isArray(runLogEntries) || runLogEntries.length === 0) { box.innerHTML = '<span class="muted">（暂无运行日志——后台循环与请求处理的事件会出现在这里）</span>'; return; }
+  box.innerHTML = '<table><tr><th>时间</th><th>级别</th><th>内容</th></tr>' +
+    runLogEntries.map((e, i) => '<tr data-runlog="' + i + '"><td>' + (e.ts ? new Date(e.ts).toLocaleTimeString() : '?') + '</td><td>' + levelTag(e.level) + '</td><td>' + esc(e.message || '') + '</td></tr>').join('') +
+    '</table><pre id="runLogDetail" style="display:none; margin-top:8px"></pre>';
+}
+function showRunLogDetail(i) {
+  const panel = document.getElementById('runLogDetail');
+  const e = runLogEntries[i];
+  if (!panel || !e) return;
+  if (panel.dataset.idx === String(i) && panel.style.display !== 'none') { panel.style.display = 'none'; panel.dataset.idx = ''; return; }
+  const detail = e.detail === undefined ? '' : (typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail, null, 2));
+  panel.textContent = (e.message || '') + (detail ? '\n────────\n' + detail : '');
+  panel.dataset.idx = String(i);
+  panel.style.display = '';
+}
+let logsTimer = null;
+function setLogsAuto(on) {
+  if (logsTimer) { clearInterval(logsTimer); logsTimer = null; }
+  if (on) logsTimer = setInterval(() => { loadRunLogs(); }, 30000);
+}
+
+/* ── 操作输出（列表 + 点行看详情） ── */
+const opOutputs = [];
+function pushOpLog(title, data) {
+  opOutputs.unshift({ ts: Date.now(), title, text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) });
+  if (opOutputs.length > 50) opOutputs.length = 50;
+  renderOpOutputs();
+}
+function renderOpOutputs() {
+  const box = document.getElementById('wbLogs');
+  if (!opOutputs.length) { box.innerHTML = '<span class="muted">（暂无操作输出——点各卡片的操作按钮后，结果会列在这里，点击行查看完整详情）</span>'; return; }
+  box.innerHTML = '<table><tr><th>时间</th><th>操作</th></tr>' +
+    opOutputs.map((o, i) => '<tr data-oplog="' + i + '"><td>' + new Date(o.ts).toLocaleTimeString() + '</td><td>' + esc(o.title) + '</td></tr>').join('') +
+    '</table><pre id="opLogDetail" style="display:none; margin-top:8px"></pre>';
+}
+function showOpLogDetail(i) {
+  const panel = document.getElementById('opLogDetail');
+  const o = opOutputs[i];
+  if (!panel || !o) return;
+  if (panel.dataset.idx === String(i) && panel.style.display !== 'none') { panel.style.display = 'none'; panel.dataset.idx = ''; return; }
+  panel.textContent = o.text;
+  panel.dataset.idx = String(i);
+  panel.style.display = '';
+}
+
+/* ── 账号助手 ── */
+let wbLoginId = null, wbTimer = null;
+async function wbLogin() {
+  const variant = document.getElementById('wbVariant').value;
+  const start = await api('/login/start', 'POST', { variant });
+  document.getElementById('wbLoginState').innerHTML = '<a target="_blank" href="' + esc(start.verificationUri) + '">打开授权页</a>';
+  wbLoginId = start.loginId;
+  wbTimer = setInterval(async () => {
+    const poll = await api('/login/poll?loginId=' + encodeURIComponent(wbLoginId));
+    if (poll.done) { clearInterval(wbTimer); document.getElementById('wbLoginState').textContent = poll.error ? ('失败: ' + poll.error) : '成功！'; loadWb(); }
+  }, 2500);
+}
+function metaRow(a) {
+  const exp = a.expiresAt ? new Date(a.expiresAt).toLocaleString() : '—';
+  const state = a.needsRelogin ? '<span class="tag err">需重登</span>' : '<span class="tag ok">正常</span>';
+  return '<tr><td>' + esc(a.email || a.nickname || a.uid) + '</td><td>' + esc(a.variant) + '</td><td>' + exp + '</td><td>' + state +
+    '</td><td><button class="ghost" data-act="switch" data-id="' + esc(a.id) + '">切换</button> ' +
+    '<button class="ghost" data-act="refresh" data-id="' + esc(a.id) + '">刷新</button> ' +
+    '<button class="ghost" data-act="del" data-id="' + esc(a.id) + '">删除</button></td></tr>' +
+    '<tr class="acct-feedback" data-feedback="' + esc(a.id) + '" style="display:none"><td colspan="5" class="muted"></td></tr>';
+}
+async function loadWb() {
+  const accs = await api('/accounts');
+  document.getElementById('wbAccounts').innerHTML = '<table><tr><th>账号</th><th>档位</th><th>过期</th><th>状态</th><th>操作</th></tr>' +
+    (accs.accounts || []).map(metaRow).join('') + '</table>';
+  const cfg = await api('/checkin/config');
+  document.getElementById('wbCheckinCfg').innerHTML = checkinForm(cfg);
+  try { renderTravel(await api('/travel/status')); } catch {}
+}
+function checkinForm(c) {
+  return '<div class="row"><label><input type="checkbox" id="ckEn"' + (c.enabled ? ' checked' : '') + '> 自动执行</label>' +
+    '<span class="tag ' + (c.enabled ? 'ok' : 'err') + '" id="ckState">' + (c.enabled ? '自动：开' : '自动：关') + '</span>' +
+    '<button class="ghost" data-act="checkin-save">保存自动配置</button></div>' +
+    '<details style="border-top:none; margin-top:6px; padding-top:0"><summary>高级：时间窗与保活</summary>' +
+    '<div class="row" style="margin-top:6px">' +
+    '<span class="muted">时间窗</span>' +
+    '<input id="ckStart" value="' + esc(c.checkin_start) + '" placeholder="开始 HH:MM" size="8">' +
+    '<input id="ckEnd" value="' + esc(c.checkin_end) + '" placeholder="结束 HH:MM" size="8">' +
+    '<span class="muted">保活天数</span><input id="ckKeep" type="number" value="' + (c.keepalive_days || 0) + '" size="3">' +
+    '<span class="muted">（时间窗留空 = 全天可签；设置后窗口内各账号错峰签到；保活天数 0 = 每次全量刷新 Token）</span></div></details>';
+}
+async function wbSaveCheckin() {
+  await api('/checkin/config', 'POST', { enabled: document.getElementById('ckEn').checked,
+    checkin_start: document.getElementById('ckStart').value, checkin_end: document.getElementById('ckEnd').value,
+    keepalive_days: Number(document.getElementById('ckKeep').value) });
+  loadWb();
+}
+function inlineFeedback(id, text, isError) {
+  const row = document.querySelector('tr[data-feedback="' + id + '"] td');
+  if (!row) return;
+  row.textContent = text;
+  row.style.color = isError ? 'var(--err)' : 'var(--ok)';
+  row.parentElement.style.display = '';
+}
+async function wbCredits() {
+  document.getElementById('wbCredits').innerHTML = '<div class="kpi"><span>查询中…（逐账号请求官方接口，约需数秒）</span></div>';
+  const r = await api('/credits');
+  document.getElementById('wbCredits').innerHTML = (r.results || []).map(c => c.ok
+    ? '<div class="kpi"><span>' + esc(c.accountName) + '</span><b>' + c.totalRemaining + '</b><span>' +
+      (c.expiringSoon ? '<span class="soon">7天内到期 ' + c.expiringSoonRemaining + '</span>' : '') +
+      (c.soonestExpireAt ? ' · ' + new Date(c.soonestExpireAt).toLocaleDateString() : '') + '</span></div>'
+    : '<div class="kpi"><span>' + esc(c.accountName) + '</span><b class="expired">—</b><span>' + esc(c.error) + '</span></div>').join('');
+}
+function renderTravel(r) {
+  const st = document.getElementById('trState');
+  if (st) { st.textContent = r.enabled ? '自动：开' : '自动：关'; st.className = 'tag ' + (r.enabled ? 'ok' : 'err'); }
+  document.getElementById('wbTravel').innerHTML = '<table><tr><th>账号</th><th>状态</th></tr>' +
+    (r.accounts || []).map(a => '<tr><td>' + esc(a.name) + '</td><td><span class="tag ' + (a.label === 'finished' ? 'ok' : a.label === 'unsupported' ? 'err' : a.label === 'traveling' ? 'ok' : 'warn') + '">' + esc(a.label) + (a.locationName ? ' · ' + esc(a.locationName) : '') + '</span></td></tr>').join('') + '</table>';
+}
+async function wbTravelRefresh() {
+  wbState('状态刷新：同步官方状态…', 'travel');
+  try { renderTravel(await api('/travel/status?refresh=1')); wbState('状态刷新：已同步', 'travel'); }
+  catch (e) { wbState('状态刷新：失败', 'travel'); }
+}
+
+/* ── 网关代理（模型网关） ── */
+async function loadGateway() {
+  const r = await api('/gateway/config');
+  document.getElementById('gwKey').value = r.virtualKey || '';
+  document.getElementById('gwLanHint').textContent = (r.lan && (r.lan.hosts || []).length)
+    ? '内网接入：baseURL http://' + r.lan.hosts.join(' 或 http://') + ':' + r.lan.port + '/v1（接入格式与上方相同，API Key 相同；仅开放 AI 网关，不含管理界面。内网其他机器首次使用需在本机防火墙放行 ' + r.lan.port + '/TCP，多网卡时选实际所在网段的地址）'
+    : '';
+  const sel = document.getElementById('gwAccount');
+  sel.innerHTML = (r.accounts || []).map(a => '<option value="' + esc(a.id) + '"' + (r.activeAccountId === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.usable ? '' : '（信封态不可用）') + '</option>').join('') || '<option>（无账号）</option>';
+  if (!r.activeAccountId && (r.accounts || [])[0]) sel.value = r.accounts[0].id;
+  document.getElementById('gwThinking').value = r.thinking || 'default';
+  document.getElementById('gwModels').value = (r.models || []).join(', ');
+  renderSignatures(r.signatureRewrites || []);
+  const usage = r.usage || [];
+  const s = r.summary;
+  let html = '';
+  if (s && s.requests > 0) {
+    html += '<div class="row" style="margin-bottom:8px">' +
+      '<span class="tag ' + (s.errors > 0 ? 'warn' : 'ok') + '">累计 ' + s.requests + ' 次请求</span>' +
+      '<span class="tag ok">成功 ' + s.ok + '</span>' +
+      (s.errors > 0 ? '<span class="tag err">失败 ' + s.errors + '</span>' : '') +
+      '<span class="tag">输入 ' + s.promptTokens + ' / 输出 ' + s.completionTokens + ' tokens</span>' +
+      '<span class="tag ' + (s.credit === null ? 'warn' : 'ok') + '">积分扣费 ' + (s.credit === null ? '含未知（失败请求）' : s.credit) + '</span></div>';
+    html += '<table><tr><th>模型</th><th>请求</th><th>tokens(入+出)</th><th>积分</th></tr>' +
+      s.byModel.map(m => '<tr><td>' + esc(m.model) + '</td><td>' + m.requests + '</td><td>' + m.promptTokens + ' + ' + m.completionTokens + '</td><td>' + (m.credit === null ? '—' : m.credit) + '</td></tr>').join('') + '</table>';
+  }
+  html += '<div class="muted" style="margin-top:10px">最近 ' + Math.min(usage.length, 30) + ' / ' + usage.length + ' 条调用明细</div>';
+  html += '<table style="margin-top:4px"><tr><th>时间</th><th>账号</th><th>模型</th><th>tokens</th><th>积分</th><th>状态</th></tr>' +
+    (usage.length ? usage.slice(0, 30).map(u => '<tr><td>' + new Date(u.ts).toLocaleTimeString() + '</td><td>' + esc(u.account) + '</td><td>' + esc(u.model) + '</td><td>' + (u.promptTokens || 0) + ' + ' + (u.completionTokens || 0) + '</td><td>' + (u.credit === null || u.credit === undefined ? '—' : u.credit) + '</td><td>' + (u.ok ? '<span class="tag ok">成功</span>' : '<span class="tag err" title="' + esc(u.error || '') + '">失败</span>') + '</td></tr>').join('') : '<tr><td colspan="6" class="muted">暂无调用记录</td></tr>') + '</table>';
+  document.getElementById('gwUsage').innerHTML = html;
+}
+async function gwSaveAccount() {
+  const btn = document.getElementById('gwSaveAccountBtn');
+  btn.textContent = '保存中…';
+  try {
+    await api('/gateway/config', 'POST', { activeAccountId: document.getElementById('gwAccount').value, thinking: document.getElementById('gwThinking').value });
+    btn.textContent = '已保存 ✓';
+  } catch (e) {
+    btn.textContent = '保存失败';
+  }
+  loadGateway();
+  setTimeout(() => { btn.textContent = '保存'; }, 1500);
+}
+async function gwRefreshModels(btn) {
+  wbState('模型刷新：逐个探测官方可用性（约需数秒）…', 'gw');
+  try {
+    const r = await api('/gateway/models/refresh', 'POST', {});
+    document.getElementById('gwModels').value = (r.models || []).join(', ');
+    renderSignatures(r.signatureRewrites || []);
+    const lines = (r.report || []).map(x => (x.available ? '✓ ' : '✗ ') + x.id + (x.note ? '（' + x.note + '）' : ''));
+    pushOpLog('模型探测', '模型探测结果：\n' + lines.join('\n'));
+    wbState('模型刷新：完成，可用 ' + (r.models || []).length + ' 个（已更新清单）', 'gw');
+    loadGateway();
+  } catch (e) { wbState('模型刷新：失败', 'gw'); }
+}
+async function gwSaveModels(btn) {
+  const models = document.getElementById('gwModels').value.split(',').map(s => s.trim()).filter(Boolean);
+  btn.textContent = '保存中…';
+  try {
+    await api('/gateway/config', 'POST', { models });
+    btn.textContent = '已保存 ✓';
+  } catch (e) {
+    btn.textContent = '保存失败';
+  }
+  setTimeout(() => { btn.textContent = '保存模型'; }, 1500);
+}
+function renderSignatures(sigs) {
+  document.getElementById('gwSignatures').innerHTML = (sigs.length
+    ? '<table><tr><th>匹配句</th><th>改写为</th><th></th></tr>' +
+      sigs.map((s, i) => '<tr><td>' + esc(s.match.slice(0, 80)) + (s.match.length > 80 ? '…' : '') + '</td><td>' + esc(s.replacement) + '</td><td><button class="ghost" data-act="gw-sig-del" data-id="' + i + '">删</button></td></tr>').join('') + '</table>'
+    : '<span class="muted">（空——签名命中将原样转发，可能触发 11128）</span>');
+}
+async function gwDeleteSignature(index) {
+  const r = await api('/gateway/config');
+  const sigs = (r.signatureRewrites || []).filter((_, i) => i !== index);
+  await api('/gateway/config', 'POST', { signatureRewrites: sigs });
+  loadGateway();
+}
+async function gwAddSignature(btn) {
+  const match = document.getElementById('gwSigMatch').value.trim();
+  const replacement = document.getElementById('gwSigReplacement').value.trim();
+  if (!match) { btn.textContent = '请填匹配句'; setTimeout(() => { btn.textContent = '添加'; }, 1500); return; }
+  const r = await api('/gateway/config');
+  const sigs = r.signatureRewrites || [];
+  if (sigs.some(s => s.match === match)) { alert('该匹配句已存在'); return; }
+  btn.textContent = '添加中…';
+  try {
+    await api('/gateway/config', 'POST', { signatureRewrites: [...sigs, { match, replacement }] });
+    document.getElementById('gwSigMatch').value = '';
+    document.getElementById('gwSigReplacement').value = '';
+    btn.textContent = '已添加 ✓';
+  } catch (e) {
+    btn.textContent = '添加失败';
+  }
+  loadGateway();
+  setTimeout(() => { btn.textContent = '添加'; }, 1500);
+}
+async function gwResetSignatures(btn) {
+  btn.textContent = '恢复中…';
+  try {
+    const builtin = [{ match: 'Main branch (you will usually use this for PRs): main', replacement: 'Main branch: main' }];
+    await api('/gateway/config', 'POST', { signatureRewrites: builtin });
+    btn.textContent = '已恢复 ✓';
+  } catch (e) {
+    btn.textContent = '恢复失败';
+  }
+  loadGateway();
+  setTimeout(() => { btn.textContent = '恢复默认'; }, 1500);
+}
+async function gwRefreshUsage() {
+  const state = document.getElementById('gwUsageState');
+  state.textContent = '刷新中…';
+  try {
+    await loadGateway();
+    state.textContent = '已刷新 ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    state.textContent = '刷新失败: ' + e;
+  }
+}
+async function gwRotateKey() {
+  const r = await api('/gateway/key/rotate', 'POST', {});
+  document.getElementById('gwKey').value = r.virtualKey || '';
+}
+
+/* ── 统一事件委托 ── */
+document.addEventListener('click', async (ev) => {
+  const runRow = ev.target.closest('tr[data-runlog]');
+  if (runRow) { showRunLogDetail(Number(runRow.dataset.runlog)); return; }
+  const opRow = ev.target.closest('tr[data-oplog]');
+  if (opRow) { showOpLogDetail(Number(opRow.dataset.oplog)); return; }
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const id = btn.dataset.id;
+  if (act === 'tab') { switchTab(btn.dataset.tab); return; }
+  if (act === 'switch' || act === 'refresh' || act === 'del') {
+    btn.disabled = true;
+    const fb = document.querySelector('tr[data-feedback="' + id + '"] td');
+    if (fb) { fb.textContent = '执行中…'; fb.style.color = 'var(--dim)'; fb.parentElement.style.display = ''; }
+    try {
+      if (act === 'switch') {
+        const r = await api('/switch', 'POST', { id, restart: true });
+        inlineFeedback(id, r.ok ? ('切换成功' + (r.backup ? '（已备份认证文件）' : '')) : ('失败: ' + (r.error || '')), !r.ok);
+      } else if (act === 'refresh') {
+        const r = await api('/refresh/' + id, 'POST', {});
+        inlineFeedback(id, r.ok ? 'Token 已刷新' : ('失败: ' + (r.error || '')), !r.ok);
+      } else if (act === 'del') {
+        await api('/accounts/' + id, 'DELETE');
+        loadWb();
+      }
+    } catch (e) { inlineFeedback(id, '请求失败: ' + e, true); }
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = true;
+  try {
+    switch (act) {
+      case 'login-start': await wbLogin(); break;
+      case 'credits': await wbCredits(); break;
+      case 'checkin-save': await wbSaveCheckin(); break;
+      case 'checkin-run': await wbAction('签到', '/checkin/run'); break;
+      case 'travel-save': await wbAction('旅行配置', '/travel/config', { enabled: document.getElementById('wbTravelEnabled').checked }); break;
+      case 'travel-run': await wbAction('派猫', '/travel/run'); break;
+      case 'travel-claim': await wbAction('领取', '/travel/claim'); break;
+      case 'travel-refresh': await wbTravelRefresh(); break;
+      case 'gw-key-copy': await navigator.clipboard.writeText(document.getElementById('gwKey').value); break;
+      case 'gw-key-rotate': await gwRotateKey(); break;
+      case 'gw-models-save': await gwSaveModels(btn); break;
+      case 'gw-models-refresh': await gwRefreshModels(btn); break;
+      case 'gw-account-save': await gwSaveAccount(); break;
+      case 'gw-sig-add': await gwAddSignature(btn); break;
+      case 'gw-sig-del': await gwDeleteSignature(Number(btn.dataset.id)); break;
+      case 'gw-sig-reset': await gwResetSignatures(btn); break;
+      case 'gw-usage-refresh': await gwRefreshUsage(); break;
+      case 'logs-refresh': await loadRunLogs(); break;
+      default: break;
+    }
+  } catch (e) { pushOpLog('操作失败', String(e)); }
+  btn.disabled = false;
+});
+
+/* ── 启动 ── */
+document.getElementById('logsAuto').addEventListener('change', (e) => setLogsAuto(e.target.checked));
+renderOpOutputs();
+switchTab(currentTab());
+loadWb();
+loadGateway();
+startStatusPolling();
+</script>
+</body>
+</html>
