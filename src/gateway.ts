@@ -58,8 +58,10 @@ export interface GatewayConfig {
   models: string[]
   /** 'default' = 模型自带思考；'disabled' = 注入 thinking disabled（glm-5.3-flash 思考吃满预算时正文会为空） */
   thinking?: 'default' | 'disabled'
-  /** 上游通道风控的已知客户端提示签名 → 语义等价改写（11128 防御，可经 UI/API 更新） */
+  /** 生效改写表（内置基线 ∪ 用户增量），运行时只读；存储层只落 customSignatureRewrites */
   signatureRewrites?: SignatureRewrite[]
+  /** 存储层：仅用户自定义增量。旧格式（整包快照）读取时自动迁移 */
+  customSignatureRewrites?: SignatureRewrite[]
 }
 
 export interface SignatureRewrite {
@@ -86,33 +88,65 @@ interface UsageEntry {
 const usageRing: UsageEntry[] = []
 let lastRefreshAt = 0
 
+/**
+ * 旧版配置把内置表整包快照存进 signatureRewrites，导致应用更新内置表对
+ * 存量用户永不生效。新语义：存储层只存用户增量，生效表 = 内置基线 ∪ 增量。
+ * 读取旧格式时按 match 剔除内置项完成迁移。
+ */
+export function deriveCustomRewrites(stored: SignatureRewrite[] | undefined): SignatureRewrite[] {
+  if (!Array.isArray(stored)) return []
+  return stored.filter(
+    (rule) => Boolean(rule) && typeof rule.match === 'string' && rule.match !== '' && !DEFAULT_SIGNATURE_REWRITES.some((base) => base.match === rule.match),
+  )
+}
+
+export function effectiveRewrites(custom: SignatureRewrite[] | undefined): SignatureRewrite[] {
+  const extra = Array.isArray(custom)
+    ? custom.filter((rule) => Boolean(rule) && typeof rule.match === 'string' && rule.match !== '')
+    : []
+  return [...DEFAULT_SIGNATURE_REWRITES, ...extra]
+}
+
 export async function gatewayConfig(): Promise<GatewayConfig> {
   const config = await readConfig<Partial<GatewayConfig>>('gateway.json', {})
+  const custom = Array.isArray(config.customSignatureRewrites) ? config.customSignatureRewrites : deriveCustomRewrites(config.signatureRewrites)
+  const effective = effectiveRewrites(custom)
   if (config.virtualKey !== undefined && config.models !== undefined) {
     return {
       virtualKey: config.virtualKey,
       models: config.models,
       thinking: config.thinking ?? 'default',
-      signatureRewrites: Array.isArray(config.signatureRewrites) ? config.signatureRewrites : DEFAULT_SIGNATURE_REWRITES,
+      signatureRewrites: effective,
       ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
     }
   }
   // first run: generate and PERSIST immediately so every reader sees the same key
   const initial: GatewayConfig = {
     virtualKey: config.virtualKey ?? `wb-${randomUUID().replace(/-/g, '')}`,
-    models: config.models ?? ['hy4-preview', 'hy3', 'space-bunny', 'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash', 'glm-5.0-turbo'],
+    models: config.models ?? [...OFFICIAL_MODEL_CATALOG],
     thinking: config.thinking ?? 'default',
-    signatureRewrites: Array.isArray(config.signatureRewrites) ? config.signatureRewrites : DEFAULT_SIGNATURE_REWRITES,
+    signatureRewrites: effective,
     ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
   }
-  await writeConfig('gateway.json', initial)
+  await writeConfig('gateway.json', storedConfigShape(initial))
   return initial
+}
+
+/** 存储层投影：内置基线不落盘（随版本更新自动生效），只落用户增量。 */
+function storedConfigShape(config: GatewayConfig): Record<string, unknown> {
+  return {
+    virtualKey: config.virtualKey,
+    models: config.models,
+    thinking: config.thinking ?? 'default',
+    customSignatureRewrites: deriveCustomRewrites(config.signatureRewrites),
+    ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
+  }
 }
 
 export async function saveGatewayConfig(patch: Partial<GatewayConfig>): Promise<GatewayConfig> {
   const current = await gatewayConfig()
   const next = { ...current, ...patch }
-  await writeConfig('gateway.json', next)
+  await writeConfig('gateway.json', storedConfigShape(next))
   return next
 }
 
@@ -402,11 +436,9 @@ export function anthropicToOpenAi(body: AnthropicBody): Record<string, unknown> 
 /**
  * 已知客户端系统提示签名句 → 语义等价改写。上游通道校验（11128）按其他编程
  * CLI 的系统提示样板句识别"未批准通道"；网关是用户自有账号的本机代理，转发前
- * 中和签名（语义保持），让任意客户端都能用自己的积分。可持续扩充此表。
+ * 中和签名（语义保持），让任意客户端都能用自己的积分。内置基线即
+ * DEFAULT_SIGNATURE_REWRITES（随版本更新），用户增量经 UI/API 叠加。
  */
-const SIGNATURE_REWRITES: [string, string][] = [
-  ['Main branch (you will usually use this for PRs): main', 'Main branch: main'],
-]
 
 function neutralizeSignatures(text: string, rewrites: SignatureRewrite[]): string {
   let out = text
@@ -493,7 +525,12 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
       if (response.status >= 500) response = await attempt(UPSTREAM_FAILOVER_HOST)
       if (!response.ok) {
         const retryText = await response.text().catch(() => '')
-        response = new Response(retryText, {
+        // 重发仍被拦：大概率命中了改写表未覆盖的新签名句——把处置指引写进
+        // 错误消息（此前把上游 400 原文直接甩给客户端，用户无从下手）
+        const hint = retryText.includes('11128')
+          ? `上游通道风控(11128)持续拦截：疑似命中改写表未覆盖的新签名句。请到「网关代理 → 高级：签名改写」添加规则；被拦请求体已转储至 ~/.wb-hub/gateway-debug/ 供定位。上游原文: ${retryText.slice(0, 150)}`
+          : retryText
+        response = new Response(hint, {
           status: response.status,
           headers: { 'content-type': response.headers.get('content-type') ?? 'application/json' },
         })

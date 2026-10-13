@@ -468,8 +468,8 @@ async function gwAddSignature(btn) {
 async function gwResetSignatures(btn) {
   btn.textContent = '恢复中…';
   try {
-    const builtin = [{ match: 'Main branch (you will usually use this for PRs): main', replacement: 'Main branch: main' }];
-    await api('/gateway/config', 'POST', { signatureRewrites: builtin });
+    // 空列表 = 清空用户增量；生效表回到内置基线（随版本更新，不在前端硬编码）
+    await api('/gateway/config', 'POST', { signatureRewrites: [] });
     btn.textContent = '已恢复 ✓';
   } catch (e) {
     btn.textContent = '恢复失败';

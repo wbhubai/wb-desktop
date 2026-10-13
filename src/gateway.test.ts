@@ -3,6 +3,8 @@ import {
   anthropicMessageStart,
   anthropicToOpenAi,
   createAnthropicStreamTranslator,
+  deriveCustomRewrites,
+  effectiveRewrites,
   estimateAnthropicInputTokens,
   mapUpstreamError,
 } from './gateway.ts'
@@ -222,5 +224,33 @@ describe('estimateAnthropicInputTokens', () => {
       messages: [{ role: 'user', content: 'ijklmnop' }], // 8 latin → 2
     } as unknown as AnthropicBody
     expect(estimateAnthropicInputTokens(body)).toBe(4)
+  })
+})
+
+describe('signature rewrite storage migration', () => {
+  it('old full snapshot migrates: builtin entries filtered out, customs kept', () => {
+    const stored = [
+      { match: 'Main branch (you will usually use this for PRs): main', replacement: 'Main branch: main' },
+      { match: 'CUSTOM-1', replacement: 'custom-1' },
+    ]
+    expect(deriveCustomRewrites(stored)).toEqual([{ match: 'CUSTOM-1', replacement: 'custom-1' }])
+  })
+
+  it('empty/undefined stored yields no custom', () => {
+    expect(deriveCustomRewrites(undefined)).toEqual([])
+    expect(deriveCustomRewrites([])).toEqual([])
+  })
+
+  it('effective table always carries the builtin baseline plus customs', () => {
+    const effective = effectiveRewrites([{ match: 'X', replacement: 'Y' }])
+    expect(effective.length).toBeGreaterThanOrEqual(1)
+    expect(effective.some((r) => r.match === 'X')).toBe(true)
+    // 应用更新内置表后，零配置用户自动获得新基线
+    expect(effective[0]).toMatchObject({ match: 'Main branch (you will usually use this for PRs): main' })
+  })
+
+  it('reset (empty desired list) derives to empty custom → builtin baseline only', () => {
+    const effective = effectiveRewrites(deriveCustomRewrites([]))
+    expect(effective).toEqual(effectiveRewrites([]))
   })
 })
