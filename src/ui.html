@@ -184,6 +184,11 @@ function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','
 function wbState(text, scope) { if (!scope) return; document.querySelectorAll('.wbstate[data-state="' + scope + '"]').forEach(el => { el.textContent = text; }); }
 const OUTCOME_LABELS = { claimed: '领取成功', dispatched: '派发成功', waiting: '途中', arrived: '待领取', 'already-traveling': '已在途中', 'daily-limit': '今日上限', idle: '无行程', 'no-action': '无动作', skipped: '跳过', success: '成功', already: '已签过', inactive: '未开放', error: '失败' };
 function summarizeOutcome(label, r) {
+  // 未执行的明确提示：无账号/自动未开启时按钮不再显示误导性的 "ok"
+  if (r?.status === 'skipped') {
+    return r.reason === 'no_accounts' ? '无账号，未执行' : '跳过' + (r.reason ? '（' + r.reason + '）' : '');
+  }
+  if (r?.status === 'disabled') return '自动执行未开启，未执行';
   const rows = Array.isArray(r?.accounts) ? r.accounts : null;
   if (!rows || rows.length === 0) return String(r.status || (r.ok === true ? 'ok' : 'done'));
   const counts = {};
