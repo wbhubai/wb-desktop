@@ -54,6 +54,7 @@
 <body>
 <header>
   <h1>WorkBuddy 账号助手</h1>
+  <button class="ghost" data-act="show-declaration" style="margin-left:auto">使用声明</button>
   <div class="status" id="runStatus" title="正在获取运行状态…">
     <span class="dot" id="statusDot"></span><span id="statusText">检测中…</span>
   </div>
@@ -180,16 +181,27 @@
 </footer>
 <div class="ack-overlay" id="ackOverlay">
   <div class="card">
-    <h3 style="margin-top:0">使用声明（必读）</h3>
-    <ul style="padding-left:18px; font-size:13px;">
-      <li>本工具<b>仅供个人自用账号</b>：账号管理、签到保活、猫猫旅行、本地模型网关。</li>
-      <li><b>禁止</b>批量注册小号、分发额度、提供付费 API / 共享池、二次打包或收费售卖。</li>
-      <li>自动签到 / 旅行 / 成长任务属于对第三方服务的自动化操作，可能违反其服务条款，<b>账号风险自担</b>。</li>
-      <li>本工具与腾讯及官方产品无任何关联；账号 token 明文保存在本机 <code>~/.wb-hub/</code>，请妥善保管。</li>
-      <li>完整声明见项目 README「使用声明（必读）」。</li>
-    </ul>
+    <h3 style="margin-top:0">📜 使用声明（必读）</h3>
+    <div style="font-size:13px;">
+      <p>本项目（wb-desktop）的开发初衷只有一个：<b>方便个人管理自己的 WorkBuddy / CodeBuddy 账号</b>——登录态管理、自动签到、猫猫旅行、成长任务，以及把自己的账号积分包装成本地模型网关供自己的 AI 工具使用。它是免费、开源、按「原样」提供的个人自用工具。</p>
+      <p><b>特别提示</b>：本项目包含对上游接口的自动化调用与部分逆向实现（签到协议、成长任务事件上报、通道签名改写等）。这些机制可能随上游升级而失效，也可能触碰平台风控——<b>使用即表示理解并接受相应的账号风险</b>。</p>
+      <p>若发现以下滥用行为，我们表达最强烈的反对：</p>
+      <ul style="margin:4px 0; padding-left:18px;">
+        <li>批量注册小号 / 收购账号，对外提供付费 API、共享池、代充等业务；</li>
+        <li>二次加壳、捆绑卡密（授权码）售卖，或以「公益服」「低价中转」等名义变相收费分发。</li>
+      </ul>
+      <p>声明如下：</p>
+      <ol style="margin:4px 0; padding-left:18px;">
+        <li><b>一切商用 / 售卖行为与本项目及作者无关。</b>本项目不授权、不支持、不参与任何面向公众的 API 售卖、账号池出租、卡密收费分发；行为人由此产生的一切后果自行承担。</li>
+        <li><b>自动化操作与转售接口配额违反目标平台服务条款。</b>由此导致的账号封禁、条款违约或法律风险由使用者自行承担，作者不对使用结果负责。</li>
+        <li><b>请勿购买任何「收费版」「卡密版」「公益中转版」。</b>本项目永远免费开源；无法审计的分发存在窃取凭证（明文 token）的风险。</li>
+        <li><b>关于开源协议的诚实说明。</b>MIT 赋予的是代码层面的自由，<b>不赋予</b>以本项目名义宣传、售卖、捆绑分发，或要求作者提供支持与背书的权利。</li>
+        <li><b>作者保留止损的权利。</b>若滥用行为持续或上游环境变化，作者可能随时停止维护、删除仓库，且不另行通知。</li>
+      </ol>
+      <p class="muted">本工具与腾讯及官方产品无任何关联；完整声明见项目 README「使用声明（必读）」。</p>
+    </div>
     <div class="row" style="justify-content:flex-end">
-      <button class="act" data-act="ack-agree">我已阅读并同意</button>
+      <button class="act" id="ackBtn" data-act="ack-agree">我已阅读并同意</button>
     </div>
   </div>
 </div>
@@ -625,6 +637,10 @@ document.addEventListener('click', async (ev) => {
       case 'travel-save': await wbAction('旅行配置', '/travel/config', { enabled: document.getElementById('wbTravelEnabled').checked }); break;
       case 'travel-run': await wbAction('派猫', '/travel/run'); break;
       case 'growth-run': await wbAction('成长任务', '/growth/run'); break;
+      case 'show-declaration':
+        document.getElementById('ackBtn').textContent = '关闭';
+        document.getElementById('ackOverlay').style.display = 'flex';
+        break;
       case 'ack-agree':
         await api('/ack', 'POST', {});
         document.getElementById('ackOverlay').style.display = 'none';
@@ -656,6 +672,7 @@ async function initDisclaimer() {
   try {
     const ack = await api('/ack');
     if (ack.acknowledged) return;
+    document.getElementById('ackBtn').textContent = '我已阅读并同意';
     document.getElementById('ackOverlay').style.display = 'flex';
   } catch {}
 }
