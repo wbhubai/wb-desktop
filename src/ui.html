@@ -42,7 +42,8 @@
   .kpi span { color:var(--dim); font-size:12px; }
   .soon { color:var(--warn); } .expired { color:var(--err); }
   details { margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }
-  details summary { cursor:pointer; color:var(--fg); font-size:13px; user-select:none; }
+  details summary { cursor:pointer; color:var(--fg); font-size:13px; user-select:none; list-style:none; }
+  details summary::-webkit-details-marker { display:none; } /* 原生折叠三角与下方 ▸/▾ 重复，隐藏 */
   details summary::before { content:'▸ '; color:var(--dim); }
   details[open] summary::before { content:'▾ '; }
   tr[data-runlog],tr[data-oplog] { cursor:pointer; }

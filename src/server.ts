@@ -12,8 +12,8 @@ import { networkInterfaces } from 'node:os'
 import {
   checkinCycle,
   importLocal,
-  keepaliveDaily,
   oauth,
+  pushLog,
   queryCredit,
   recentLogs,
   refreshOne,
@@ -29,6 +29,7 @@ import { currentAccounts, loadAccounts, readConfig, readList, writeConfig, dataF
 // Bundled by esbuild (build.mjs define); in tsx dev mode falls back to reading the file.
 declare const __UI_HTML__: string | undefined
 import { activeGatewayAccount, gatewayConfig, handleGateway, OFFICIAL_MODEL_CATALOG, probeModel, recentUsage, saveGatewayConfig, usageSummary } from './gateway.ts'
+import { startBackgroundLoops } from './loops.ts'
 
 const startedAt = Date.now()
 let controlPort = 0
@@ -280,4 +281,6 @@ export async function startServer(port: number): Promise<void> {
     })
   })
   if (lanGatewayPort() > 0) await startLanGateway(lanGatewayPort(), process.env.WB_LAN_HOST || '0.0.0.0')
+  pushLog('info', 'wb-desktop 已启动')
+  startBackgroundLoops()
 }
