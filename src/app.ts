@@ -346,6 +346,7 @@ export async function travelCycle(mode: 'dispatch' | 'claim', manual = false): P
   cycleState[busyKey] = true
   try {
     await loadAccounts()
+    if (currentAccounts().length === 0) return { status: 'skipped', reason: 'no_accounts' }
     const today = new Date().toISOString().slice(0, 10)
     let cache = rollCacheToToday((await readJson<TravelCache>(dataFile('travel-cache.json'))) ?? { date: today, completed: false, results: {} }, today)
     const overlay: Record<string, TravelRecord> = {}
@@ -463,6 +464,7 @@ export async function growthCycle(manual = false): Promise<unknown> {
   cycleState.growthBusy = true
   try {
     await loadAccounts()
+    if (currentAccounts().length === 0) return { status: 'skipped', reason: 'no_accounts' }
     const today = new Date().toISOString().slice(0, 10)
     const state = rollGrowthStateToToday(
       (await readJson<GrowthDayState>(dataFile('growth-state.json'))) ?? { date: today, reported: {}, checked: {} },
