@@ -124,7 +124,6 @@
         <button class="ghost" data-act="gw-model-add">添加</button>
       </div>
       <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
-      <div class="row" id="gwAccountsHealth" style="margin-top:4px; display:none"></div>
       <div class="row" style="margin-top:8px">
         <span class="muted">使用账号</span>
         <select id="gwAccount" style="min-width:200px"></select>
@@ -155,7 +154,7 @@
     </div>
     <div class="card"><h3>调用统计</h3>
       <div class="row">
-        <button class="ghost" id="gwUsageRefreshBtn" data-act="gw-usage-refresh">刷新统计</button>
+        <button class="act" id="gwUsageRefreshBtn" data-act="gw-usage-refresh">刷新统计</button>
         <span class="muted" id="gwUsageState"></span>
       </div>
       <div id="gwUsage" style="margin-top:8px"></div>
@@ -392,14 +391,6 @@ async function loadGateway() {
   const sel = document.getElementById('gwAccount');
   sel.innerHTML = (r.accounts || []).map(a => '<option value="' + esc(a.id) + '"' + (r.activeAccountId === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.usable ? '' : '（信封态不可用）') + '</option>').join('') || '<option>（无账号）</option>';
   if (!r.activeAccountId && (r.accounts || [])[0]) sel.value = r.accounts[0].id;
-  const healthEl = document.getElementById('gwAccountsHealth');
-  if (healthEl) {
-    const health = (r.accountsHealth || []).filter(a => a.errors > 0);
-    healthEl.innerHTML = health.length
-      ? health.map(a => '<span class="tag warn" title="最近 ' + a.total + ' 次调用失败 ' + a.errors + ' 次">' + esc(a.name) + '：失败 ' + a.errors + '/' + a.total + '</span>').join(' ')
-      : '';
-    healthEl.style.display = health.length ? '' : 'none';
-  }
   document.getElementById('gwThinking').value = r.thinking || 'default';
   renderModelCatalog(r.modelCatalog || (r.models || []).map(function (id) { return { id: id, source: 'manual' }; }));
   renderSignatures(r.signatureRewrites || []);
