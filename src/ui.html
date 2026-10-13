@@ -111,9 +111,14 @@
       </div>
       <div class="row" style="margin-top:8px">
         <span class="muted">模型清单</span>
-        <input id="gwModels" style="flex:1" placeholder="逗号分隔的模型 ID">
-        <button class="ghost" data-act="gw-models-save">保存模型</button>
-        <button class="ghost" data-act="gw-models-refresh">刷新（探测官方可用性）</button>
+        <button class="ghost" data-act="gw-models-sync">同步官方目录（免费）</button>
+        <button class="ghost" data-act="gw-models-refresh">探测可用性（约 0.01 积分/个）</button>
+        <span class="muted">来源：官方 /v3/config + 真实调用自动学习 + 手动添加</span>
+      </div>
+      <div id="gwModelCatalog" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:6px">
+        <input id="gwModelAdd" style="flex:1" placeholder="手动添加模型 ID（如 kimi-k3）">
+        <button class="ghost" data-act="gw-model-add">添加</button>
       </div>
       <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
       <div class="row" style="margin-top:8px">
@@ -379,7 +384,7 @@ async function loadGateway() {
   sel.innerHTML = (r.accounts || []).map(a => '<option value="' + esc(a.id) + '"' + (r.activeAccountId === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.usable ? '' : '（信封态不可用）') + '</option>').join('') || '<option>（无账号）</option>';
   if (!r.activeAccountId && (r.accounts || [])[0]) sel.value = r.accounts[0].id;
   document.getElementById('gwThinking').value = r.thinking || 'default';
-  document.getElementById('gwModels').value = (r.models || []).join(', ');
+  renderModelCatalog(r.modelCatalog || (r.models || []).map(function (id) { return { id: id, source: 'manual' }; }));
   renderSignatures(r.signatureRewrites || []);
   const usage = r.usage || [];
   const s = r.summary;
@@ -411,28 +416,81 @@ async function gwSaveAccount() {
   loadGateway();
   setTimeout(() => { btn.textContent = '保存'; }, 1500);
 }
+function renderModelCatalog(catalog) {
+  const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
+  const ctx = function (m) {
+    if (!m.contextWindow) return '—';
+    return (m.contextWindow / 1000).toFixed(0) + 'K' + (m.maxOutputTokens ? ' / ' + (m.maxOutputTokens / 1000).toFixed(0) + 'K' : '');
+  };
+  const rows = (catalog || []).map(function (m) {
+    const meta = [];
+    if (m.multiplier !== undefined && m.multiplier !== null) meta.push(m.multiplier + 'x');
+    if (m.images) meta.push('图');
+    if (m.toolCall) meta.push('工具');
+    return '<tr>' +
+      '<td><b>' + esc(m.id) + '</b></td>' +
+      '<td>' + esc(m.name || '') + '</td>' +
+      '<td>' + esc(meta.join(' · ')) + '</td>' +
+      '<td>' + esc(ctx(m)) + '</td>' +
+      '<td>' + esc((m.tags || []).join('，')) + '</td>' +
+      '<td>' + esc(sourceLabel[m.source] || m.source || '') + '</td>' +
+      '<td>' + (m.lastSeenAt ? new Date(m.lastSeenAt).toLocaleString() : '—') + '</td>' +
+      '<td><button class="ghost" data-act="gw-model-del" data-id="' + esc(m.id) + '">移除</button></td>' +
+      '</tr>';
+  });
+  document.getElementById('gwModelCatalog').innerHTML = (catalog || []).length
+    ? '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows.join('') + '</table>'
+    : '<div class="muted">清单为空——点「同步官方目录」拉取官方模型列表</div>';
+}
+function currentModelIds() {
+  const input = document.getElementById('gwModelAdd');
+  const ids = [];
+  document.querySelectorAll('#gwModelCatalog tbody tr td:first-child b').forEach(function (b) { ids.push(b.textContent); });
+  void input;
+  return ids;
+}
+async function gwModelAdd(btn) {
+  const input = document.getElementById('gwModelAdd');
+  const id = (input.value || '').trim();
+  if (!id) return;
+  btn.textContent = '添加中…';
+  try {
+    const ids = currentModelIds();
+    if (ids.indexOf(id) === -1) ids.push(id);
+    await api('/gateway/config', 'POST', { models: ids });
+    input.value = '';
+    loadGateway();
+    btn.textContent = '已添加 ✓';
+  } catch (e) { btn.textContent = '添加失败'; }
+  setTimeout(function () { btn.textContent = '添加'; }, 1500);
+}
+async function gwModelDel(btn) {
+  const id = btn.dataset.id;
+  try {
+    const ids = currentModelIds().filter(function (x) { return x !== id; });
+    await api('/gateway/config', 'POST', { models: ids });
+    loadGateway();
+  } catch (e) { pushOpLog('删除模型失败', String(e)); }
+}
+async function gwSyncModels(btn) {
+  btn.textContent = '同步中…';
+  wbState('模型目录同步：拉取官方 /v3/config（免费）…', 'gw');
+  try {
+    const r = await api('/gateway/models/sync', 'POST', {});
+    if (r.error) { wbState('模型目录同步：' + r.error, 'gw'); btn.textContent = '同步失败'; }
+    else { wbState('模型目录同步：完成，共 ' + r.count + ' 个模型', 'gw'); btn.textContent = '已同步 ✓'; loadGateway(); }
+  } catch (e) { wbState('模型目录同步：失败', 'gw'); btn.textContent = '同步失败'; }
+  setTimeout(function () { btn.textContent = '同步官方目录（免费）'; }, 1500);
+}
 async function gwRefreshModels(btn) {
-  wbState('模型刷新：逐个探测官方可用性（约需数秒）…', 'gw');
+  wbState('模型探测：逐个发 max_tokens=1 微请求（约 0.01 积分/个）…', 'gw');
   try {
     const r = await api('/gateway/models/refresh', 'POST', {});
-    document.getElementById('gwModels').value = (r.models || []).join(', ');
-    renderSignatures(r.signatureRewrites || []);
     const lines = (r.report || []).map(x => (x.available ? '✓ ' : '✗ ') + x.id + (x.note ? '（' + x.note + '）' : ''));
     pushOpLog('模型探测', '模型探测结果：\n' + lines.join('\n'));
-    wbState('模型刷新：完成，可用 ' + (r.models || []).length + ' 个（已更新清单）', 'gw');
+    wbState('模型探测：完成，确认可用 ' + (r.models || []).length + ' 个', 'gw');
     loadGateway();
-  } catch (e) { wbState('模型刷新：失败', 'gw'); }
-}
-async function gwSaveModels(btn) {
-  const models = document.getElementById('gwModels').value.split(',').map(s => s.trim()).filter(Boolean);
-  btn.textContent = '保存中…';
-  try {
-    await api('/gateway/config', 'POST', { models });
-    btn.textContent = '已保存 ✓';
-  } catch (e) {
-    btn.textContent = '保存失败';
-  }
-  setTimeout(() => { btn.textContent = '保存模型'; }, 1500);
+  } catch (e) { wbState('模型探测：失败', 'gw'); }
 }
 function renderSignatures(sigs) {
   document.getElementById('gwSignatures').innerHTML = (sigs.length
@@ -535,7 +593,9 @@ document.addEventListener('click', async (ev) => {
       case 'travel-refresh': await wbTravelRefresh(); break;
       case 'gw-key-copy': await navigator.clipboard.writeText(document.getElementById('gwKey').value); break;
       case 'gw-key-rotate': await gwRotateKey(); break;
-      case 'gw-models-save': await gwSaveModels(btn); break;
+      case 'gw-models-sync': await gwSyncModels(btn); break;
+      case 'gw-model-add': await gwModelAdd(btn); break;
+      case 'gw-model-del': await gwModelDel(btn); break;
       case 'gw-models-refresh': await gwRefreshModels(btn); break;
       case 'gw-account-save': await gwSaveAccount(); break;
       case 'gw-sig-add': await gwAddSignature(btn); break;

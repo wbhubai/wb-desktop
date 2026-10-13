@@ -24,7 +24,7 @@ const UPSTREAM_FAILOVER_HOST = 'https://wb.tencentbuddy.com'
 const UPSTREAM_PATH = '/v2/chat/completions'
 const REFRESH_COOLDOWN_MS = 5_000
 
-/** 官方客户端展示的模型目录（小写调用 ID，2026-09-30 逐一实测可用）。 */
+/** 离线兜底目录：仅在 /v3/config 拉取失败且本地无缓存时使用。线上清单以远程为准。 */
 export const OFFICIAL_MODEL_CATALOG = [
   'hy4-preview',
   'hy3',
@@ -35,28 +35,169 @@ export const OFFICIAL_MODEL_CATALOG = [
   'glm-5.0-turbo',
 ]
 
+/** 统一模型条目：/v1/models 与 UI 模型清单共用的唯一数据形态。 */
+export interface ModelInfo {
+  id: string
+  /** 官方展示名（如 GLM-5.3-Flash） */
+  name?: string
+  /** 官方积分倍率（如 0.29 = 0.29x），credits 解析（兼容 "x0.29 credits"/"x0.29"） */
+  multiplier?: number
+  images?: boolean
+  toolCall?: boolean
+  /** 上下文窗口 / 输出上限（tokens，maxInputTokens/maxOutputTokens） */
+  contextWindow?: number
+  maxOutputTokens?: number
+  /** 官方中文简介（截 120 字） */
+  description?: string
+  /** 官方标签（限时免费/夜间折扣/订阅优先等，来自 discounts 徽章） */
+  tags?: string[]
+  /** 来源：remote=官方目录（/v3/config ∪ 企业端点），builtin=离线兜底，manual=手动添加，learned=真实调用成功 */
+  source: 'remote' | 'builtin' | 'manual' | 'learned'
+  /** 最近一次真实调用成功时间（台账学习） */
+  lastSeenAt?: number
+}
+
+function parseCredits(raw: unknown): number | undefined {
+  if (typeof raw !== 'string') return undefined
+  const match = /^x([\d.]+)/.exec(raw.trim())
+  return match ? Number(match[1]) : undefined
+}
+
+function parseModelEntry(model: Record<string, unknown>): ModelInfo | undefined {
+  const id = typeof model.id === 'string' ? model.id.trim() : ''
+  if (id === '') return undefined
+  const entry: ModelInfo = { id, source: 'remote' }
+  if (typeof model.name === 'string' && model.name !== '') entry.name = model.name
+  const multiplier = parseCredits(model.credits)
+  if (multiplier !== undefined) entry.multiplier = multiplier
+  if (typeof model.supportsImages === 'boolean') entry.images = model.supportsImages
+  if (typeof model.supportsToolCall === 'boolean') entry.toolCall = model.supportsToolCall
+  if (typeof model.maxInputTokens === 'number' && model.maxInputTokens > 0) entry.contextWindow = model.maxInputTokens
+  if (typeof model.maxOutputTokens === 'number' && model.maxOutputTokens > 0) entry.maxOutputTokens = model.maxOutputTokens
+  if (typeof model.descriptionZh === 'string' && model.descriptionZh !== '') entry.description = model.descriptionZh.slice(0, 120)
+  return entry
+}
+
+/** 解析 /v3/config 的 data：models 数组 + discounts 徽章 → 统一 ModelInfo[]（纯函数，可单测）。 */
+export function parseModelCatalog(data: { models?: unknown; discounts?: unknown }): ModelInfo[] {
+  const models = Array.isArray(data.models) ? (data.models as Record<string, unknown>[]) : []
+  const tagByModel = new Map<string, string[]>()
+  if (Array.isArray(data.discounts)) {
+    for (const discount of data.discounts as Record<string, unknown>[]) {
+      const badge = discount.badge as { label?: unknown } | undefined
+      const label = typeof badge?.label === 'string' ? badge.label : ''
+      if (label === '') continue
+      for (const id of Array.isArray(discount.modelIds) ? (discount.modelIds as unknown[]) : []) {
+        if (typeof id !== 'string') continue
+        const tags = tagByModel.get(id) ?? []
+        if (!tags.includes(label)) tags.push(label)
+        tagByModel.set(id, tags)
+      }
+    }
+  }
+  const out: ModelInfo[] = []
+  for (const model of models) {
+    const entry = parseModelEntry(model)
+    if (!entry) continue
+    const tags = tagByModel.get(entry.id)
+    if (tags) entry.tags = tags
+    out.push(entry)
+  }
+  return out
+}
+
+/** 解析企业端点（/v2|/console/enterprises/personal/models）的 models——auto 等
+ * 路由伪模型只在此路下发；credits 格式为 "x0.06"（无 credits 后缀）。 */
+export function parseEnterpriseModels(data: { models?: unknown }): ModelInfo[] {
+  const models = Array.isArray(data.models) ? (data.models as Record<string, unknown>[]) : []
+  const out: ModelInfo[] = []
+  for (const model of models) {
+    const entry = parseModelEntry(model)
+    if (entry) out.push(entry)
+  }
+  return out
+}
+
+/** 目录并集：主路（/v3/config）元数据权威，企业端点补主路缺失的 id（如 auto）。 */
+export function mergeModelCatalogs(primary: ModelInfo[], supplement: ModelInfo[]): ModelInfo[] {
+  const merged = new Map(primary.map((entry) => [entry.id, entry]))
+  for (const entry of supplement) {
+    if (!merged.has(entry.id)) merged.set(entry.id, entry)
+  }
+  return [...merged.values()]
+}
+
+/** 台账学习：真实调用成功即并入目录（零成本可用性证明），已存在则只刷新最近成功时间。 */
+export function learnModelInCatalog(catalog: ModelInfo[], id: string, now: number): ModelInfo[] {
+  const trimmed = id.trim()
+  if (trimmed === '') return catalog
+  const existing = catalog.find((entry) => entry.id === trimmed)
+  if (existing) {
+    existing.lastSeenAt = now
+    return catalog
+  }
+  catalog.push({ id: trimmed, source: 'learned', lastSeenAt: now })
+  return catalog
+}
+
 /**
  * 探测一个模型 ID 是否可用：max_tokens=1 的微型请求（消耗约 0.01 积分）。
- * 200 = 可用；400 "service info not found" = 不存在；其余错误原样上报
- * （可能是限流/余额等临时问题，不据此剔除）。
+ * available=可立即调用；exists=false 仅在 400 "service info not found"（上游
+ * 确认不存在）时成立——限流/风控/5xx 等临时错误为 exists=undefined，不据此剔除。
  */
-export async function probeModel(account: WbAccount, model: string): Promise<{ available: boolean; note?: string }> {
+export async function probeModel(account: WbAccount, model: string): Promise<{ available: boolean; exists?: boolean; note?: string }> {
   const response = await fetch(UPSTREAM_HOST + UPSTREAM_PATH, {
     method: 'POST',
     headers: { ...(await gatewayHeaders(account)), 'content-type': 'application/json' },
     body: JSON.stringify({ model, stream: true, max_tokens: 1, thinking: { type: 'disabled' }, messages: [{ role: 'user', content: 'hi' }] }),
     signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   })
-  if (response.status === 200) return { available: true }
+  if (response.status === 200) return { available: true, exists: true }
   const text = await response.text().catch(() => '')
-  if (response.status === 400 && text.includes('service info not found')) return { available: false, note: '模型不存在' }
+  if (response.status === 400 && text.includes('service info not found')) return { available: false, exists: false, note: '模型不存在' }
   return { available: false, note: `${response.status}: ${text.slice(0, 80)}` }
+}
+
+/**
+ * 官方模型目录权威来源（客户端不升级也会更新），零积分双路并集：
+ * 主路 GET /v3/config（CLI UA，wb 域实测 33 模型最全），补路 GET /v2/enterprises/
+ * personal/models（失败回退 /console 同族路径；auto 路由模型只在此路下发）。
+ * 拉取失败返回 error，由调用方决定回退本地缓存。
+ */
+export async function fetchModelCatalog(account: WbAccount): Promise<{ models: ModelInfo[]; error?: string }> {
+  const headers = { ...(await gatewayHeaders(account)), 'x-requested-with': 'XMLHttpRequest' }
+  const getJson = async (url: string): Promise<{ data?: { models?: unknown; discounts?: unknown } } | undefined> => {
+    const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    if (!response.ok) return undefined
+    return (await response.json().catch(() => undefined)) as { data?: { models?: unknown; discounts?: unknown } } | undefined
+  }
+  let primary: ModelInfo[] = []
+  let sawAny = false
+  const v3 = await getJson(UPSTREAM_HOST + '/v3/config').catch(() => undefined)
+  if (v3?.data && Array.isArray(v3.data.models)) {
+    primary = parseModelCatalog(v3.data)
+    sawAny = true
+  }
+  let supplement: ModelInfo[] = []
+  for (const path of ['/v2/enterprises/personal/models', '/console/enterprises/personal/models']) {
+    const enterprise = await getJson(UPSTREAM_HOST + path).catch(() => undefined)
+    if (enterprise?.data && Array.isArray(enterprise.data.models)) {
+      supplement = parseEnterpriseModels(enterprise.data)
+      sawAny = true
+      break
+    }
+  }
+  if (!sawAny) return { models: [], error: '/v3/config 与企业端点均不可用' }
+  return { models: mergeModelCatalogs(primary, supplement) }
 }
 
 export interface GatewayConfig {
   activeAccountId?: string
   virtualKey: string
+  /** 兼容派生：modelCatalog 的 id 列表（/v1/models、旧 UI 仍读它） */
   models: string[]
+  /** 统一模型目录：远程官方（权威）∪ 离线兜底 ∪ 手动 ∪ 台账学习，删除即从存储移除 */
+  modelCatalog?: ModelInfo[]
   /** 'default' = 模型自带思考；'disabled' = 注入 thinking disabled（glm-5.3-flash 思考吃满预算时正文会为空） */
   thinking?: 'default' | 'disabled'
   /** 生效改写表（内置基线 ∪ 远程规则 ∪ 用户增量），运行时只读；存储层只落 remote/custom 两层 */
@@ -111,14 +252,38 @@ export function effectiveRewrites(custom: SignatureRewrite[] | undefined, remote
   return [...DEFAULT_SIGNATURE_REWRITES, ...valid(remote), ...valid(custom)]
 }
 
+/**
+ * 模型目录迁移与兜底：旧配置只有 `models: string[]`（首次运行时冻结的快照）。
+ * 读取时转为目录条目，并把离线兜底目录中缺失的 id 补进去；已有条目元数据保留。
+ */
+export function migrateModelCatalog(stored: ModelInfo[] | undefined, legacyModels: string[] | undefined): ModelInfo[] {
+  const catalog: ModelInfo[] = Array.isArray(stored) ? stored.filter((entry) => entry && typeof entry.id === 'string' && entry.id !== '') : []
+  const known = new Set(catalog.map((entry) => entry.id))
+  for (const id of Array.isArray(legacyModels) ? legacyModels : []) {
+    if (typeof id === 'string' && id !== '' && !known.has(id)) {
+      catalog.push({ id, source: 'manual' })
+      known.add(id)
+    }
+  }
+  for (const id of OFFICIAL_MODEL_CATALOG) {
+    if (!known.has(id)) {
+      catalog.push({ id, source: 'builtin' })
+      known.add(id)
+    }
+  }
+  return catalog
+}
+
 export async function gatewayConfig(): Promise<GatewayConfig> {
   const config = await readConfig<Partial<GatewayConfig>>('gateway.json', {})
   const custom = Array.isArray(config.customSignatureRewrites) ? config.customSignatureRewrites : deriveCustomRewrites(config.signatureRewrites)
   const effective = effectiveRewrites(custom, config.remoteSignatureRewrites)
+  const modelCatalog = migrateModelCatalog(config.modelCatalog, config.models)
   if (config.virtualKey !== undefined && config.models !== undefined) {
     return {
       virtualKey: config.virtualKey,
-      models: config.models,
+      models: modelCatalog.map((entry) => entry.id),
+      modelCatalog,
       thinking: config.thinking ?? 'default',
       signatureRewrites: effective,
       ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
@@ -128,7 +293,8 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
   // first run: generate and PERSIST immediately so every reader sees the same key
   const initial: GatewayConfig = {
     virtualKey: config.virtualKey ?? `wb-${randomUUID().replace(/-/g, '')}`,
-    models: config.models ?? [...OFFICIAL_MODEL_CATALOG],
+    models: modelCatalog.map((entry) => entry.id),
+    modelCatalog,
     thinking: config.thinking ?? 'default',
     signatureRewrites: effective,
     ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
@@ -142,7 +308,8 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
 function storedConfigShape(config: GatewayConfig): Record<string, unknown> {
   return {
     virtualKey: config.virtualKey,
-    models: config.models,
+    models: (config.modelCatalog ?? []).map((entry) => entry.id),
+    modelCatalog: config.modelCatalog ?? [],
     thinking: config.thinking ?? 'default',
     customSignatureRewrites: deriveCustomRewrites(config.signatureRewrites),
     remoteSignatureRewrites: Array.isArray(config.remoteSignatureRewrites) ? config.remoteSignatureRewrites : [],
@@ -156,6 +323,63 @@ export async function saveGatewayConfig(patch: Partial<GatewayConfig>): Promise<
   const next = { ...current, ...patch }
   await writeConfig('gateway.json', storedConfigShape(next))
   return next
+}
+
+/**
+ * 官方目录同步（免费）：以 GET /v3/config 为准更新目录——远程条目带元数据写入，
+ * 本地手动/台账学习/离线兜底条目保留，远程已下架的旧 remote 条目清除。
+ */
+export async function syncModelCatalog(): Promise<{ count: number; error?: string }> {
+  const active = await activeGatewayAccount()
+  if (!active.account) return { count: 0, error: active.error }
+  const result = await fetchModelCatalog(active.account)
+  if (result.error !== undefined) return { count: 0, error: result.error }
+  const config = await gatewayConfig()
+  const byId = new Map((config.modelCatalog ?? []).map((entry) => [entry.id, entry]))
+  const next: ModelInfo[] = []
+  for (const remote of result.models) {
+    const existing = byId.get(remote.id)
+    next.push(existing ? { ...remote, lastSeenAt: existing.lastSeenAt } : remote)
+    byId.delete(remote.id)
+  }
+  for (const rest of byId.values()) {
+    if (rest.source !== 'remote') next.push(rest)
+  }
+  await saveGatewayConfig({ modelCatalog: next })
+  return { count: next.length }
+}
+
+// 台账学习落盘防抖：每次成功调用都触发，30s 合并写一次 gateway.json
+let pendingCatalog: ModelInfo[] | null = null
+let catalogSaveTimer: NodeJS.Timeout | undefined
+
+function learnModelUsage(model: string): void {
+  const id = model.trim()
+  if (id === '') return
+  const now = Date.now()
+  const apply = (catalog: ModelInfo[]): void => {
+    const existing = catalog.find((entry) => entry.id === id)
+    if (existing) existing.lastSeenAt = now
+    else catalog.push({ id, source: 'learned', lastSeenAt: now })
+  }
+  if (pendingCatalog) {
+    apply(pendingCatalog)
+  } else {
+    void gatewayConfig()
+      .then((config) => {
+        const catalog = config.modelCatalog ?? []
+        apply(catalog)
+        pendingCatalog = catalog
+      })
+      .catch(() => {})
+  }
+  clearTimeout(catalogSaveTimer)
+  catalogSaveTimer = setTimeout(() => {
+    const catalog = pendingCatalog
+    pendingCatalog = null
+    if (catalog) void saveGatewayConfig({ modelCatalog: catalog }).catch(() => {})
+  }, 30_000)
+  catalogSaveTimer.unref?.()
 }
 
 /**
@@ -664,6 +888,7 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
 }
 
 function tallyUsage(account: WbAccount, model: string, usage: UpstreamChunk['usage'], ok: boolean, error?: string): void {
+  if (ok) learnModelUsage(model)
   recordUsage({
     ts: Date.now(),
     account: accountName(account),
@@ -1287,7 +1512,18 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
       return true
     }
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ object: 'list', data: config.models.map((id) => ({ id, object: 'model', owned_by: 'wb-desktop' })) }))
+    res.end(JSON.stringify({
+      object: 'list',
+      data: (config.modelCatalog ?? config.models.map((id) => ({ id }))).map((entry) => ({
+        id: entry.id,
+        object: 'model',
+        owned_by: 'wb-desktop',
+        ...(entry.name ? { display_name: entry.name } : {}),
+        ...(entry.contextWindow ? { context_window: entry.contextWindow } : {}),
+        ...(entry.maxOutputTokens ? { max_output_tokens: entry.maxOutputTokens } : {}),
+        ...(entry.multiplier !== undefined ? { credit_multiplier: entry.multiplier } : {}),
+      })),
+    }))
     return true
   }
   return false

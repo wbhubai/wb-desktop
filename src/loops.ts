@@ -6,7 +6,7 @@
  * previously ran NO loops because registration lived only in the dev entry.
  */
 import { checkinCycle, keepaliveDaily, pushLog, travelCycle } from './app.ts'
-import { refreshRemoteRules } from './gateway.ts'
+import { refreshRemoteRules, syncModelCatalog } from './gateway.ts'
 
 function guard(label: string, run: () => Promise<unknown>): void {
   run().catch((error: unknown) => {
@@ -15,11 +15,12 @@ function guard(label: string, run: () => Promise<unknown>): void {
 }
 
 export function startBackgroundLoops(): void {
-  pushLog('info', '后台循环已注册：签到(1m) / 旅行派发(30m) / 旅行领取(15m) / 保活(6h) / 远程规则(24h)')
+  pushLog('info', '后台循环已注册：签到(1m) / 旅行派发(30m) / 旅行领取(15m) / 保活(6h) / 远程规则+模型目录(24h)')
   setInterval(() => guard('签到', () => checkinCycle()), 60_000)
   setInterval(() => guard('旅行派发', () => travelCycle('dispatch')), 30 * 60_000)
   setInterval(() => guard('旅行领取', () => travelCycle('claim')), 15 * 60_000)
   setInterval(() => guard('保活', () => keepaliveDaily()), 6 * 3_600_000)
-  // 远程签名规则每日刷新；未配置 rulesUrl 时内部静默跳过，不发起任何请求
+  // 远程签名规则 + 官方模型目录每日同步（均免费）；未配置 rulesUrl 时规则内部静默跳过
   setInterval(() => guard('远程规则', () => refreshRemoteRules()), 24 * 3_600_000)
+  setInterval(() => guard('模型目录', () => syncModelCatalog()), 24 * 3_600_000)
 }

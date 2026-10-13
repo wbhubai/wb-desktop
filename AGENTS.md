@@ -52,7 +52,8 @@ wb-desktop 在本机维护多个 WorkBuddy/CodeBuddy 账号（登录态、Token 
 |---|---|---|
 | `/api/gateway/config` | GET | 虚拟 Key（`virtualKey`）、模型清单、生效改写表、`usage`（最近台账）、`summary`（按模型汇总）、可用账号列表 |
 | `/api/gateway/config` | POST | 局部更新：`activeAccountId`（网关服务账号）、`models`、`thinking:'default'\|'disabled'`、`signatureRewrites`（传生效表全量，内置基线自动剔除）、`rulesUrl`（远程规则源，默认关闭） |
-| `/api/gateway/models/refresh` | POST | 探测官方可用模型并更新清单（逐个发 max_tokens=1 微请求） |
+| `/api/gateway/models/sync` | POST | 免费同步官方模型目录（`/v3/config` ∪ 企业端点，含倍率/上下文/图片/工具元数据）；后台每日自动同步，真实调用成功的模型也会自动并入 |
+| `/api/gateway/models/refresh` | POST | 逐个探测清单内模型可用性（约 0.01 积分/个）；仅上游确认不存在才移除 |
 | `/api/gateway/key/rotate` | POST | 重置虚拟 Key |
 | `/api/gateway/rules/refresh` | POST | 立即拉取远程规则（未配置 `rulesUrl` 时返回提示） |
 

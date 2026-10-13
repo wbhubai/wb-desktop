@@ -27,6 +27,7 @@ await build({
 })
 
 // 无头入口（server + 后台循环，无 Electron）与 MCP stdio server
+// 与 backend.cjs 同款 UI 注入：headless 的 GET / 也需要内嵌 ui.html
 for (const [entry, outfile] of [
   ['src/headless.ts', 'headless.cjs'],
   ['src/mcp.ts', 'mcp.cjs'],
@@ -39,6 +40,8 @@ for (const [entry, outfile] of [
     target: 'node20',
     outfile: path.join(dist, outfile),
     sourcemap: false,
+    loader: { '.html': 'text' },
+    define: { __UI_HTML__: JSON.stringify((await import('node:fs')).readFileSync(path.join(root, 'src/ui.html'), 'utf8')) },
     logLevel: 'silent',
   })
 }

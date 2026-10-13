@@ -28,7 +28,7 @@ import { currentAccounts, loadAccounts, readConfig, readList, writeConfig, dataF
 
 // Bundled by esbuild (build.mjs define); in tsx dev mode falls back to reading the file.
 declare const __UI_HTML__: string | undefined
-import { activeGatewayAccount, gatewayConfig, handleGateway, OFFICIAL_MODEL_CATALOG, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, usageSummary } from './gateway.ts'
+import { activeGatewayAccount, gatewayConfig, handleGateway, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, syncModelCatalog, usageSummary, type ModelInfo } from './gateway.ts'
 import { startBackgroundLoops } from './loops.ts'
 
 const startedAt = Date.now()
@@ -170,7 +170,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (route === '/gateway/config' && method === 'POST') {
       const patch: Record<string, unknown> = {}
       if (typeof body['activeAccountId'] === 'string' || body['activeAccountId'] === null) patch['activeAccountId'] = body['activeAccountId']
-      if (Array.isArray(body['models'])) patch['models'] = body['models'].map(String)
+      if (Array.isArray(body['models'])) {
+        // 全量编辑模型清单：保留既有条目元数据，新增记 manual，缺席即删除
+        const current = await gatewayConfig()
+        const meta = new Map((current.modelCatalog ?? []).map((entry) => [entry.id, entry]))
+        patch['modelCatalog'] = (body['models'] as unknown[])
+          .map((id) => String(id).trim())
+          .filter((id: string) => id !== '')
+          .map((id: string) => meta.get(id) ?? ({ id, source: 'manual' } satisfies ModelInfo))
+      }
       if (body['thinking'] === 'default' || body['thinking'] === 'disabled') patch['thinking'] = body['thinking']
       if (typeof body['rulesUrl'] === 'string') patch['rulesUrl'] = body['rulesUrl'].trim()
       if (Array.isArray(body['signatureRewrites'])) {
@@ -185,20 +193,28 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (route === '/gateway/rules/refresh' && method === 'POST') {
       return replyJson(res, 200, await refreshRemoteRules())
     }
+    if (route === '/gateway/models/sync' && method === 'POST') {
+      const result = await syncModelCatalog()
+      return replyJson(res, result.error !== undefined ? 503 : 200, result)
+    }
     if (route === '/gateway/models/refresh' && method === 'POST') {
       const active = await activeGatewayAccount()
       if (!active.account) return replyJson(res, 503, { error: active.error })
       const config = await gatewayConfig()
-      const candidates = [...new Set([...OFFICIAL_MODEL_CATALOG, ...config.models])]
-      const available: string[] = []
+      const candidates = [...new Set((config.modelCatalog ?? []).map((entry) => entry.id))]
       const report: { id: string; available: boolean; note?: string }[] = []
+      const kept: ModelInfo[] = []
       for (const candidate of candidates) {
         const result = await probeModel(active.account, candidate)
         report.push({ id: candidate, available: result.available, ...(result.note !== undefined ? { note: result.note } : {}) })
-        if (result.available) available.push(candidate)
+        // 仅上游确认不存在（400 service info not found）才移除；临时错误原样保留
+        if (result.exists !== false) {
+          const meta = (config.modelCatalog ?? []).find((entry) => entry.id === candidate)
+          if (meta) kept.push(meta)
+        }
       }
-      await saveGatewayConfig({ models: available })
-      return replyJson(res, 200, { models: available, report })
+      await saveGatewayConfig({ modelCatalog: kept })
+      return replyJson(res, 200, { models: kept.map((entry) => entry.id), report })
     }
     if (route === '/gateway/key/rotate' && method === 'POST') {
       return replyJson(res, 200, await saveGatewayConfig({ virtualKey: `wb-${crypto.randomUUID().replace(/-/g, '')}` }))

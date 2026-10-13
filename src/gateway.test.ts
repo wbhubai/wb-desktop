@@ -6,9 +6,14 @@ import {
   deriveCustomRewrites,
   effectiveRewrites,
   estimateAnthropicInputTokens,
+  learnModelInCatalog,
   mapUpstreamError,
+  mergeModelCatalogs,
+  migrateModelCatalog,
+  parseEnterpriseModels,
+  parseModelCatalog,
 } from './gateway.ts'
-import type { AnthropicBody, UpstreamChunk } from './gateway.ts'
+import type { AnthropicBody, ModelInfo, UpstreamChunk } from './gateway.ts'
 
 function chunk(partial: Partial<UpstreamChunk>): UpstreamChunk {
   return partial as UpstreamChunk
@@ -257,5 +262,76 @@ describe('signature rewrite storage migration', () => {
   it('reset (empty desired list) derives to empty custom → builtin baseline only', () => {
     const effective = effectiveRewrites(deriveCustomRewrites([]), undefined)
     expect(effective).toEqual(effectiveRewrites([], undefined))
+  })
+})
+
+describe('model catalog', () => {
+  it('parseModelCatalog: credits 解析倍率，discounts 映射标签', () => {
+    const parsed = parseModelCatalog({
+      models: [
+        { id: 'hy4-preview', name: 'Hy4 preview', credits: 'x0.29 credits', supportsImages: true, supportsToolCall: true },
+        { id: 'hy3', name: 'Hy3', credits: 'x0.00 credits' },
+        { id: 'hunyuan-image-alpha', name: 'Hunyuan Image Alpha' },
+      ],
+      discounts: [
+        { badge: { label: '夜间免费' }, modelIds: ['hy4-preview'] },
+        { badge: { label: '限时免费' }, modelIds: ['hy3', 'hy4-preview'] },
+        { badge: { label: '无模型ID' }, modelIds: [] },
+      ],
+    })
+    expect(parsed).toHaveLength(3)
+    const hy4 = parsed.find((m) => m.id === 'hy4-preview')!
+    expect(hy4.multiplier).toBe(0.29)
+    expect(hy4.tags).toEqual(['夜间免费', '限时免费'])
+    expect(hy4.images).toBe(true)
+    const hy3 = parsed.find((m) => m.id === 'hy3')!
+    expect(hy3.multiplier).toBe(0)
+    const image = parsed.find((m) => m.id === 'hunyuan-image-alpha')!
+    expect(image.multiplier).toBeUndefined()
+    expect(image.source).toBe('remote')
+  })
+
+  it('migrateModelCatalog: 旧 models 迁移为 manual，兜底目录补缺，不重复', () => {
+    const catalog = migrateModelCatalog([{ id: 'kimi-k3', source: 'learned', lastSeenAt: 1 }], ['glm-5.3'])
+    const ids = catalog.map((m) => m.id)
+    expect(ids).toContain('kimi-k3')
+    expect(ids).toContain('glm-5.3')
+    expect(ids.filter((x) => x === 'glm-5.3')).toHaveLength(1)
+    expect(catalog.find((m) => m.id === 'kimi-k3')?.source).toBe('learned')
+    // OFFICIAL_MODEL_CATALOG 兜底全部进入
+    expect(ids.length).toBeGreaterThanOrEqual(7)
+  })
+
+  it('learnModelInCatalog: 已存在只刷新时间，不存在则 learned 追加', () => {
+    const catalog: ModelInfo[] = [{ id: 'hy3', source: 'remote', lastSeenAt: 100 }]
+    learnModelInCatalog(catalog, 'hy3', 200)
+    expect(catalog.find((m) => m.id === 'hy3')?.lastSeenAt).toBe(200)
+    expect(catalog.find((m) => m.id === 'hy3')?.source).toBe('remote')
+    learnModelInCatalog(catalog, 'kimi-k3', 300)
+    expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({ source: 'learned', lastSeenAt: 300 })
+    expect(learnModelInCatalog(catalog, '  ', 400)).toHaveLength(2)
+  })
+})
+
+describe('dual-endpoint catalog', () => {
+  it('parseEnterpriseModels: 无后缀 credits 与上下文字段', () => {
+    const parsed = parseEnterpriseModels({
+      models: [
+        { id: 'auto', name: 'Auto', maxInputTokens: 256000, maxOutputTokens: 32000, supportsImages: true, supportsToolCall: true, descriptionZh: '自动匹配最优模型' },
+        { id: 'glm-5.3-flash', credits: 'x0.06', maxInputTokens: 1000000 },
+      ],
+    })
+    expect(parsed.find((m) => m.id === 'auto')).toMatchObject({ contextWindow: 256000, maxOutputTokens: 32000, description: '自动匹配最优模型' })
+    expect(parsed.find((m) => m.id === 'glm-5.3-flash')?.multiplier).toBe(0.06)
+  })
+
+  it('mergeModelCatalogs: 主路权威，补路只填缺失', () => {
+    const merged = mergeModelCatalogs(
+      [{ id: 'hy3', source: 'remote', multiplier: 0 }],
+      [{ id: 'hy3', source: 'remote', multiplier: 9.9 }, { id: 'auto', source: 'remote', contextWindow: 256000 }],
+    )
+    expect(merged).toHaveLength(2)
+    expect(merged.find((m) => m.id === 'hy3')?.multiplier).toBe(0)
+    expect(merged.find((m) => m.id === 'auto')?.contextWindow).toBe(256000)
   })
 })
