@@ -28,7 +28,7 @@ import { currentAccounts, loadAccounts, readConfig, readList, writeConfig, dataF
 
 // Bundled by esbuild (build.mjs define); in tsx dev mode falls back to reading the file.
 declare const __UI_HTML__: string | undefined
-import { activeGatewayAccount, gatewayConfig, handleGateway, OFFICIAL_MODEL_CATALOG, probeModel, recentUsage, saveGatewayConfig, usageSummary } from './gateway.ts'
+import { activeGatewayAccount, gatewayConfig, handleGateway, OFFICIAL_MODEL_CATALOG, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, usageSummary } from './gateway.ts'
 import { startBackgroundLoops } from './loops.ts'
 
 const startedAt = Date.now()
@@ -172,6 +172,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (typeof body['activeAccountId'] === 'string' || body['activeAccountId'] === null) patch['activeAccountId'] = body['activeAccountId']
       if (Array.isArray(body['models'])) patch['models'] = body['models'].map(String)
       if (body['thinking'] === 'default' || body['thinking'] === 'disabled') patch['thinking'] = body['thinking']
+      if (typeof body['rulesUrl'] === 'string') patch['rulesUrl'] = body['rulesUrl'].trim()
       if (Array.isArray(body['signatureRewrites'])) {
         const rewrites = body['signatureRewrites']
           .filter((r: unknown) => r !== null && typeof r === 'object')
@@ -180,6 +181,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         patch['signatureRewrites'] = rewrites
       }
       return replyJson(res, 200, await saveGatewayConfig(patch))
+    }
+    if (route === '/gateway/rules/refresh' && method === 'POST') {
+      return replyJson(res, 200, await refreshRemoteRules())
     }
     if (route === '/gateway/models/refresh' && method === 'POST') {
       const active = await activeGatewayAccount()

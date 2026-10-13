@@ -24,7 +24,9 @@
     "serve:watch": "tsx watch src/main.ts",
     "test": "vitest run",
     "dist": "node build.mjs && electron-builder --win portable",
-    "icon": "node make-icon.mjs"
+    "icon": "node make-icon.mjs",
+    "serve:headless": "node build.mjs && node dist/headless.cjs",
+    "mcp": "node build.mjs && node dist/mcp.cjs"
   },
   "devDependencies": {
     "electron": "^37.6.0",

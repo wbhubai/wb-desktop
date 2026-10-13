@@ -45,6 +45,7 @@ export async function probeModel(account: WbAccount, model: string): Promise<{ a
     method: 'POST',
     headers: { ...(await gatewayHeaders(account)), 'content-type': 'application/json' },
     body: JSON.stringify({ model, stream: true, max_tokens: 1, thinking: { type: 'disabled' }, messages: [{ role: 'user', content: 'hi' }] }),
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   })
   if (response.status === 200) return { available: true }
   const text = await response.text().catch(() => '')
@@ -58,10 +59,14 @@ export interface GatewayConfig {
   models: string[]
   /** 'default' = 模型自带思考；'disabled' = 注入 thinking disabled（glm-5.3-flash 思考吃满预算时正文会为空） */
   thinking?: 'default' | 'disabled'
-  /** 生效改写表（内置基线 ∪ 用户增量），运行时只读；存储层只落 customSignatureRewrites */
+  /** 生效改写表（内置基线 ∪ 远程规则 ∪ 用户增量），运行时只读；存储层只落 remote/custom 两层 */
   signatureRewrites?: SignatureRewrite[]
   /** 存储层：仅用户自定义增量。旧格式（整包快照）读取时自动迁移 */
   customSignatureRewrites?: SignatureRewrite[]
+  /** 远程规则源 URL（rules JSON，默认空=关闭，不发起任何外网请求）。静态 GET、零遥测 */
+  rulesUrl?: string
+  /** 存储层：远程规则缓存（由 refreshRemoteRules 写入） */
+  remoteSignatureRewrites?: SignatureRewrite[]
 }
 
 export interface SignatureRewrite {
@@ -100,23 +105,23 @@ export function deriveCustomRewrites(stored: SignatureRewrite[] | undefined): Si
   )
 }
 
-export function effectiveRewrites(custom: SignatureRewrite[] | undefined): SignatureRewrite[] {
-  const extra = Array.isArray(custom)
-    ? custom.filter((rule) => Boolean(rule) && typeof rule.match === 'string' && rule.match !== '')
-    : []
-  return [...DEFAULT_SIGNATURE_REWRITES, ...extra]
+export function effectiveRewrites(custom: SignatureRewrite[] | undefined, remote: SignatureRewrite[] | undefined): SignatureRewrite[] {
+  const valid = (list: SignatureRewrite[] | undefined): SignatureRewrite[] =>
+    Array.isArray(list) ? list.filter((rule) => Boolean(rule) && typeof rule.match === 'string' && rule.match !== '') : []
+  return [...DEFAULT_SIGNATURE_REWRITES, ...valid(remote), ...valid(custom)]
 }
 
 export async function gatewayConfig(): Promise<GatewayConfig> {
   const config = await readConfig<Partial<GatewayConfig>>('gateway.json', {})
   const custom = Array.isArray(config.customSignatureRewrites) ? config.customSignatureRewrites : deriveCustomRewrites(config.signatureRewrites)
-  const effective = effectiveRewrites(custom)
+  const effective = effectiveRewrites(custom, config.remoteSignatureRewrites)
   if (config.virtualKey !== undefined && config.models !== undefined) {
     return {
       virtualKey: config.virtualKey,
       models: config.models,
       thinking: config.thinking ?? 'default',
       signatureRewrites: effective,
+      ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
       ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
     }
   }
@@ -126,19 +131,22 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
     models: config.models ?? [...OFFICIAL_MODEL_CATALOG],
     thinking: config.thinking ?? 'default',
     signatureRewrites: effective,
+    ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
     ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
   }
   await writeConfig('gateway.json', storedConfigShape(initial))
   return initial
 }
 
-/** 存储层投影：内置基线不落盘（随版本更新自动生效），只落用户增量。 */
+/** 存储层投影：内置基线不落盘（随版本更新自动生效），只落远程缓存与用户增量。 */
 function storedConfigShape(config: GatewayConfig): Record<string, unknown> {
   return {
     virtualKey: config.virtualKey,
     models: config.models,
     thinking: config.thinking ?? 'default',
     customSignatureRewrites: deriveCustomRewrites(config.signatureRewrites),
+    remoteSignatureRewrites: Array.isArray(config.remoteSignatureRewrites) ? config.remoteSignatureRewrites : [],
+    ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
     ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
   }
 }
@@ -148,6 +156,26 @@ export async function saveGatewayConfig(patch: Partial<GatewayConfig>): Promise<
   const next = { ...current, ...patch }
   await writeConfig('gateway.json', storedConfigShape(next))
   return next
+}
+
+/**
+ * 拉取远程签名规则（rules JSON：{"rewrites":[{match,replacement}]}）。开源后
+ * 官方规则文件随仓库发布，新签名句无需发版即全网关生效。静态 GET、零遥测、
+ * 默认关闭（未配置 rulesUrl 时不发起任何请求）；失败静默保留上次缓存。
+ */
+export async function refreshRemoteRules(): Promise<{ fetched: number; error?: string }> {
+  const config = await gatewayConfig()
+  if (!config.rulesUrl) return { fetched: 0, error: 'rulesUrl 未配置（远程规则源关闭）' }
+  try {
+    const response = await fetch(config.rulesUrl, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), headers: { 'user-agent': 'wb-desktop' } })
+    if (!response.ok) return { fetched: 0, error: `HTTP ${response.status}` }
+    const data = (await response.json()) as { rewrites?: SignatureRewrite[] }
+    const rules = Array.isArray(data.rewrites) ? data.rewrites.filter((r) => Boolean(r) && typeof r.match === 'string' && r.match !== '') : []
+    await saveGatewayConfig({ remoteSignatureRewrites: rules })
+    return { fetched: rules.length }
+  } catch (error) {
+    return { fetched: 0, error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**
@@ -197,13 +225,13 @@ export async function activeGatewayAccount(): Promise<{ account?: WbAccount; err
 
 function recordUsage(entry: UsageEntry): void {
   usageRing.push(entry)
-  if (usageRing.length > 200) usageRing.splice(0, usageRing.length - 200)
+  if (usageRing.length > 2000) usageRing.splice(0, usageRing.length - 2000)
   void writeConfig('gateway-usage.json', usageRing).catch(() => {})
 }
 
 // restore the ring on boot so失败现场 can be diagnosed after restarts
 void readConfig<UsageEntry[]>('gateway-usage.json', []).then((stored) => {
-  if (Array.isArray(stored)) usageRing.push(...stored.slice(-200))
+  if (Array.isArray(stored)) usageRing.push(...stored.slice(-2000))
 })
 
 export function recentUsage(): UsageEntry[] {
@@ -481,6 +509,64 @@ export interface UpstreamChunk {
   usage?: { prompt_tokens?: number; completion_tokens?: number; credit?: number }
 }
 
+// 上游超时：连接/首包 120s；建立后流空闲 180s（思考模型会持续吐 reasoning
+// delta，正常间隔远小于此）——此前上游挂起会让请求永久悬挂、连接堆积
+const UPSTREAM_TTFB_MS = 120_000
+const UPSTREAM_IDLE_MS = 180_000
+const PROBE_TIMEOUT_MS = 15_000
+// 同一账号的在途上游请求上限：Agent 并发打满容易触发通道风控（11128），超出即排队
+const MAX_CONCURRENT_PER_ACCOUNT = 2
+
+class Semaphore {
+  private queue: (() => void)[] = []
+  private running = 0
+  constructor(private readonly limit: number) {}
+  async acquire(): Promise<void> {
+    if (this.running < this.limit) {
+      this.running += 1
+      return
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve))
+  }
+  release(): void {
+    const next = this.queue.shift()
+    if (next) next()
+    else this.running -= 1
+  }
+}
+
+const accountSlots = new Map<string, Semaphore>()
+
+function accountSlot(account: WbAccount): Semaphore {
+  const key = getStr(account, 'id') ?? accountName(account)
+  let slot = accountSlots.get(key)
+  if (!slot) {
+    slot = new Semaphore(MAX_CONCURRENT_PER_ACCOUNT)
+    accountSlots.set(key, slot)
+  }
+  return slot
+}
+
+/** 上游 body 的空闲看门狗：每次收到 chunk 续期，超时未收到即中止整条流。 */
+function withIdleWatchdog(body: ReadableStream<Uint8Array>, controller: AbortController): ReadableStream<Uint8Array> {
+  let timer: NodeJS.Timeout | undefined
+  const reset = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => controller.abort(new Error('upstream idle timeout')), UPSTREAM_IDLE_MS)
+    timer.unref?.()
+  }
+  reset()
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform: (chunk, enqueue) => {
+        reset()
+        enqueue.enqueue(chunk)
+      },
+      flush: () => clearTimeout(timer),
+    }),
+  )
+}
+
 async function upstreamCall(account: WbAccount, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   const config = await gatewayConfig()
   const effective = sanitizeBody({ ...body }, config.signatureRewrites ?? DEFAULT_SIGNATURE_REWRITES)
@@ -490,15 +576,44 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
     delete effective['reasoning_effort']
     delete effective['reasoning']
   }
+  const slot = accountSlot(account)
+  await slot.acquire()
+  try {
+    return await upstreamCallInner(account, effective, signal)
+  } finally {
+    slot.release()
+  }
+}
+
+async function upstreamCallInner(account: WbAccount, effective: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  // 内部总控：客户端断开（外部 signal）与内部超时共用一个 controller
+  const controller = new AbortController()
+  signal?.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
+  const ttfbTimer = setTimeout(() => controller.abort(new Error('upstream ttfb timeout')), UPSTREAM_TTFB_MS)
+  ttfbTimer.unref?.()
   const attempt = async (host: string): Promise<Response> =>
     await fetch(host + UPSTREAM_PATH, {
       method: 'POST',
       headers: { ...(await gatewayHeaders(account)), 'content-type': 'application/json' },
       body: JSON.stringify(effective),
-      ...(signal ? { signal } : {}),
+      signal: controller.signal,
     })
-  let response = await attempt(UPSTREAM_HOST)
-  if (response.status >= 500) response = await attempt(UPSTREAM_FAILOVER_HOST)
+  // 拿到响应即装空闲看门狗并撤首包定时器；重试产生的新响应需重新装
+  const sealBody = (res: Response): Response => {
+    clearTimeout(ttfbTimer)
+    if (res.body) Object.defineProperty(res, 'body', { value: withIdleWatchdog(res.body, controller), configurable: true })
+    return res
+  }
+  let response: Response
+  try {
+    response = sealBody(await attempt(UPSTREAM_HOST))
+  } catch (error) {
+    clearTimeout(ttfbTimer)
+    // 首包超时/网络失败统一转成可读错误（客户端主动断开保持 AbortError 原样上抛）
+    if (controller.signal.aborted && !signal?.aborted) throw new Error('上游无响应（连接/首包超时 120s）')
+    throw error
+  }
+  if (response.status >= 500) response = sealBody(await attempt(UPSTREAM_FAILOVER_HOST))
   if (response.status === 401 && Date.now() - lastRefreshAt > REFRESH_COOLDOWN_MS) {
     lastRefreshAt = Date.now()
     const result = await refreshAccountToken(account, async (updated) => {
@@ -506,7 +621,7 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
       if (index >= 0) currentAccounts()[index] = updated
       await persistAccounts()
     })
-    if (result.ok) response = await attempt(UPSTREAM_HOST)
+    if (result.ok) response = sealBody(await attempt(UPSTREAM_HOST))
   }
   // 11128 通道风控拦截是官方提示可重发的瞬时错误——自动重发一次
   if (response.status === 400) {
@@ -514,15 +629,18 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
     if (errorText.includes('11128')) {
       // 现场捕获：被拦的转换后请求体落盘，供定位风控触发条件
       try {
-        const { mkdir, writeFile } = await import('node:fs/promises')
+        const { mkdir, writeFile, readdir, rm } = await import('node:fs/promises')
         const dir = dataFile('gateway-debug')
         await mkdir(dir, { recursive: true })
         await writeFile(`${dir}/11128-${Date.now()}.json`, JSON.stringify({ ts: Date.now(), account: accountName(account), model: String(effective['model'] ?? ''), bodyKB: Math.round(JSON.stringify(effective).length / 1024), body: effective }, null, 1))
+        // 转储含完整 prompt 内容：只保留最近 20 个，防无限增长与内容留存
+        const files = (await readdir(dir)).filter((name) => name.startsWith('11128-')).sort()
+        for (const stale of files.slice(0, Math.max(0, files.length - 20))) await rm(`${dir}/${stale}`, { force: true })
       } catch {}
       await new Promise((resolve) => setTimeout(resolve, 800))
       await new Promise((resolve) => setTimeout(resolve, 800))
-      response = await attempt(UPSTREAM_HOST)
-      if (response.status >= 500) response = await attempt(UPSTREAM_FAILOVER_HOST)
+      response = sealBody(await attempt(UPSTREAM_HOST))
+      if (response.status >= 500) response = sealBody(await attempt(UPSTREAM_FAILOVER_HOST))
       if (!response.ok) {
         const retryText = await response.text().catch(() => '')
         // 重发仍被拦：大概率命中了改写表未覆盖的新签名句——把处置指引写进
@@ -696,7 +814,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     }))
     if (calls.length > 0) message['tool_calls'] = calls
     if (reasoning !== '' && !suppressReasoning) message['reasoning_content'] = reasoning
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': accountName(active.account) })
     res.end(JSON.stringify({
       id: `chatcmpl-${randomUUID()}`,
       object: 'chat.completion',
@@ -1116,7 +1234,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   }
   if (content.length === 0) content.push({ type: 'text', text: '' })
 
-  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': accountName(active.account) })
   res.end(
     JSON.stringify({
       id: `msg_${randomUUID()}`,

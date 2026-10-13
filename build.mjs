@@ -26,6 +26,23 @@ await build({
   logLevel: 'info',
 })
 
+// 无头入口（server + 后台循环，无 Electron）与 MCP stdio server
+for (const [entry, outfile] of [
+  ['src/headless.ts', 'headless.cjs'],
+  ['src/mcp.ts', 'mcp.cjs'],
+]) {
+  await build({
+    entryPoints: [path.join(root, entry)],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node20',
+    outfile: path.join(dist, outfile),
+    sourcemap: false,
+    logLevel: 'silent',
+  })
+}
+
 cpSync(path.join(root, 'src/ui.html'), path.join(dist, 'ui.html'))
 
 // Electron entry: tray-resident. The backend (server + timers) runs in the
@@ -98,4 +115,4 @@ boot().catch((error) => {
 });
 `,
 )
-console.log('build complete: dist/main.cjs + dist/backend.cjs + dist/ui.html')
+console.log("build complete: dist/main.cjs + dist/backend.cjs + dist/headless.cjs + dist/mcp.cjs + dist/ui.html")

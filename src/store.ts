@@ -7,7 +7,7 @@
  * auth-file backups land in `~/.wb-hub/auth-backups/` with a retention cap.
  */
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
@@ -55,9 +55,21 @@ export async function readJson<T>(file: string): Promise<T | undefined> {
 // ------------------------------------------------------------------ accounts
 
 let records: WbAccount[] = []
+let recordsMtimeMs = -1
 
 export async function loadAccounts(): Promise<WbAccount[]> {
-  records = (await readJson<WbAccount[]>(dataFile('accounts.json'))) ?? []
+  // mtime 未变时保留同一数组实例：网关每请求都调用，重复读盘既慢又会打断
+  // 调用方对 records 的就地更新；外部进程写入后 mtime 变化自动重读
+  try {
+    const mtimeMs = (await stat(dataFile('accounts.json'))).mtimeMs
+    if (mtimeMs !== recordsMtimeMs) {
+      records = (await readJson<WbAccount[]>(dataFile('accounts.json'))) ?? []
+      recordsMtimeMs = mtimeMs
+    }
+  } catch {
+    records = []
+    recordsMtimeMs = -1
+  }
   return records
 }
 
@@ -67,16 +79,31 @@ export function currentAccounts(): WbAccount[] {
 
 export async function persistAccounts(): Promise<void> {
   await atomicWriteJson(dataFile('accounts.json'), records)
+  recordsMtimeMs = -1
 }
 
 // ------------------------------------------------------------- config/logs
 
+// 配置文件 mtime 缓存：网关高频路径此前每请求整读+解析 JSON，现降为一次 stat
+const configCache = new Map<string, { mtimeMs: number; data: unknown }>()
+
 export async function readConfig<T>(name: string, fallback: T): Promise<T> {
-  return (await readJson<T>(dataFile(name))) ?? fallback
+  const file = dataFile(name)
+  try {
+    const mtimeMs = (await stat(file)).mtimeMs
+    const cached = configCache.get(name)
+    if (cached && cached.mtimeMs === mtimeMs) return structuredClone(cached.data) as T
+    const data = ((await readJson<T>(file)) ?? fallback) as T
+    configCache.set(name, { mtimeMs, data })
+    return structuredClone(data) as T
+  } catch {
+    return fallback
+  }
 }
 
 export async function writeConfig(name: string, value: unknown): Promise<void> {
   await atomicWriteJson(dataFile(name), value)
+  configCache.delete(name)
 }
 
 export async function readList<T>(name: string): Promise<T[]> {
