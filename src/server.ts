@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
 import {
   checkinCycle,
+  growthCycle,
   importLocal,
   oauth,
   pushLog,
@@ -125,6 +126,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       await writeConfig('travel-config.json', { enabled: body['enabled'] === true })
       return replyJson(res, 200, { enabled: body['enabled'] === true })
     }
+    if (route === '/growth/run' && method === 'POST') {
+      return replyJson(res, 200, await growthCycle(true))
+    }
     if (route === '/travel/run' && method === 'POST') {
       return replyJson(res, 200, await travelCycle('dispatch', true))
     }
@@ -155,11 +159,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (route === '/gateway/config' && method === 'GET') {
       const config = await gatewayConfig()
       await loadAccounts()
+      // 账号健康：按最近台账聚合（成功/失败/主要错误分类），供 UI 状态展示
+      const healthByAccount = new Map<string, { total: number; ok: number; errors: number; lastCategory?: string; lastErrorAt?: number }>()
+      for (const entry of recentUsage().slice(0, 100)) {
+        const item = healthByAccount.get(entry.account) ?? { total: 0, ok: 0, errors: 0 }
+        item.total += 1
+        if (entry.ok) item.ok += 1
+        else {
+          item.errors += 1
+          if (item.lastErrorAt === undefined || entry.ts > item.lastErrorAt) {
+            item.lastCategory = entry.category ?? 'unknown'
+            item.lastErrorAt = entry.ts
+          }
+        }
+        healthByAccount.set(entry.account, item)
+      }
       return replyJson(res, 200, {
         ...config,
         lan: lanGatewayPort() > 0 ? { hosts: lanIPv4s(), port: lanGatewayPort() } : null,
         usage: recentUsage().slice(0, 100),
         summary: usageSummary(),
+        accountsHealth: [...healthByAccount.entries()].map(([name, health]) => ({ name, ...health })),
         accounts: currentAccounts().map((account) => ({
           id: getStr(account, 'id'),
           name: getStr(account, 'email') ?? getStr(account, 'nickname') ?? 'unknown',

@@ -67,10 +67,15 @@ function dataOf(response: HttpEnvelope): Record<string, unknown> {
 }
 
 /**
- * Refresh one account. Every failure path writes needs_relogin/reason into the
- * account and returns it (the flag itself is the retry-stop); success clears
- * the flags and bumps refreshedAt.
+ * Refresh one account. Failure paths bump a consecutive-fail counter and only
+ * mark needs_relogin/reason after REFRESH_FAIL_THRESHOLD consecutive failures
+ * (single failures are often transient: network blips / refresh races — the
+ * flag itself is the retry-stop); success clears the counter and flags and
+ * bumps refreshedAt. A missing refresh token is definite and marks immediately.
  */
+
+/** 连续刷新失败多少次才标记 needs_relogin（参考 workbuddy2api-panel 的 12153 防抖语义）。 */
+export const REFRESH_FAIL_THRESHOLD = 3
 export async function refreshAccountToken(
   account: WbAccount,
   upsert: (updated: WbAccount) => void,
@@ -91,18 +96,28 @@ export async function refreshAccountToken(
   const code = codeOf(response)
   if (code !== 0 && code !== 200) {
     const message = str(response, 'message') || str(response, 'msg') || '未知错误'
-    updated['needs_relogin'] = true
-    updated['needs_relogin_reason'] = `刷新失败(code=${code ?? '空'}): ${message}`
+    const fails = Number.isFinite(Number(updated['refresh_fail_count'])) ? Number(updated['refresh_fail_count']) + 1 : 1
+    updated['refresh_fail_count'] = fails
+    if (fails >= REFRESH_FAIL_THRESHOLD) {
+      updated['needs_relogin'] = true
+      updated['needs_relogin_reason'] = `连续 ${fails} 次刷新失败(code=${code ?? '空'}): ${message}`
+    }
     upsert(updated)
-    return { account: updated, ok: false, error: updated['needs_relogin_reason'] as string }
+    const errorText = `刷新失败(code=${code ?? '空'}): ${message}`
+    return { account: updated, ok: false, error: updated['needs_relogin'] ? (updated['needs_relogin_reason'] as string) : errorText }
   }
   const data = dataOf(response)
   const accessToken = str(data, 'accessToken') || str(data, 'access_token')
   if (!accessToken) {
-    updated['needs_relogin'] = true
-    updated['needs_relogin_reason'] = '刷新响应缺少 accessToken'
+    const fails = Number.isFinite(Number(updated['refresh_fail_count'])) ? Number(updated['refresh_fail_count']) + 1 : 1
+    updated['refresh_fail_count'] = fails
+    if (fails >= REFRESH_FAIL_THRESHOLD) {
+      updated['needs_relogin'] = true
+      updated['needs_relogin_reason'] = `连续 ${fails} 次刷新失败: 刷新响应缺少 accessToken`
+    }
     upsert(updated)
-    return { account: updated, ok: false, error: updated['needs_relogin_reason'] as string }
+    const errorText = '刷新响应缺少 accessToken'
+    return { account: updated, ok: false, error: updated['needs_relogin'] ? (updated['needs_relogin_reason'] as string) : errorText }
   }
   updated['access_token'] = accessToken
   const newRefresh = str(data, 'refreshToken') || str(data, 'refresh_token')
@@ -130,6 +145,7 @@ export async function refreshAccountToken(
   updated['refreshedAt'] = now()
   delete updated['needs_relogin']
   delete updated['needs_relogin_reason']
+  delete updated['refresh_fail_count']
   upsert(updated)
   return { account: updated, ok: true }
 }

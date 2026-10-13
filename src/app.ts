@@ -50,9 +50,22 @@ import {
   mergeTravelCache,
   rollCacheToToday,
   travelDisplayLabel,
+  classifyDepartError,
   type TravelCache,
   type TravelRecord,
 } from './core/travel.ts'
+import {
+  buildChatActivityEvent,
+  LOTTERY_DRAW_CAP,
+  REPORT_PATH,
+  parseLotteryChances,
+  parseStreakFull,
+  redeemableTiers,
+  rollGrowthStateToToday,
+  supportsGrowth,
+  type GrowthDayState,
+} from './core/growth.ts'
+import { randomUUID } from 'node:crypto'
 import { fetchHttp, isPlainObject, nowMs } from './core/util.ts'
 import { listAt, recordAt, buildEntry } from './core/error-log.ts'
 import { buildAccountObj, buildAuthObj, writeAccountToAuthFile } from './core/auth-file.ts'
@@ -72,6 +85,19 @@ const FREE_PACKAGE_CODES = [
 ]
 const CHECKIN_API_AI_PREFIX = '/billing/meter'
 const TRAVEL_PREFIX = '/activity/growth/buddy/travel'
+const GROWTH_BUDDY_BASE = 'https://www.codebuddy.cn/activity/growth/buddy'
+// growth 域（连登/抽奖/旅行）统一走 codebuddy.cn + web 指纹（与猫猫旅行同域）
+const GROWTH_WEB_BASE = 'https://www.codebuddy.cn'
+
+function travelHeaders(account: WbAccount): Record<string, string> {
+  return {
+    ...buildAuthHeaders(account),
+    Accept: 'application/json',
+    'x-client-platform': 'web',
+    Origin: GROWTH_WEB_BASE,
+    Referer: `${GROWTH_WEB_BASE}/profile/growth-center`,
+  }
+}
 
 const logRing: unknown[] = []
 export function pushLog(level: 'info' | 'warn' | 'error', message: string, detail?: unknown): void {
@@ -91,7 +117,7 @@ async function recordError(message: string, detail: unknown): Promise<void> {
   await recordAt(dataFile('error.log'), buildEntry('backend', message, JSON.stringify(detail ?? ''), nowMs(), 'wb-desktop', process.platform)).catch(() => {})
 }
 
-const cycleState = { checkinBusy: false, travelBusy: false, claimBusy: false, fastRetryBudget: 12 }
+const cycleState = { checkinBusy: false, travelBusy: false, claimBusy: false, growthBusy: false, fastRetryBudget: 12 }
 let lastKeepaliveDay = ''
 
 export const oauth = new OAuthFlow(async (collected) => {
@@ -284,8 +310,8 @@ interface TravelStatusResult {
 }
 
 async function travelStatus(account: WbAccount): Promise<TravelStatusResult> {
-  const base = 'https://www.codebuddy.cn'
-  const headers = { ...buildAuthHeaders(account), 'x-client-platform': 'web', Origin: base, Referer: `${base}/profile/growth-center` }
+  const base = GROWTH_WEB_BASE
+  const headers = travelHeaders(account)
   const status = (await fetchHttp(`${base}${TRAVEL_PREFIX}/status`, 'GET', undefined, headers)) as Record<string, unknown>
   const statusCode = status['code']
   if (statusCode !== 0 && statusCode !== 200) {
@@ -309,9 +335,7 @@ async function travelStatus(account: WbAccount): Promise<TravelStatusResult> {
 }
 
 async function travelRequest(account: WbAccount, suffix: string, body: unknown): Promise<Record<string, unknown>> {
-  const base = 'https://www.codebuddy.cn'
-  const headers = { ...buildAuthHeaders(account), 'x-client-platform': 'web', Origin: base, Referer: `${base}/profile/growth-center` }
-  return (await fetchHttp(`${base}${TRAVEL_PREFIX}${suffix}`, 'POST', body, headers)) as Record<string, unknown>
+  return (await fetchHttp(`${GROWTH_WEB_BASE}${TRAVEL_PREFIX}${suffix}`, 'POST', body, travelHeaders(account))) as Record<string, unknown>
 }
 
 export async function travelCycle(mode: 'dispatch' | 'claim', manual = false): Promise<unknown> {
@@ -368,7 +392,22 @@ export async function travelCycle(mode: 'dispatch' | 'claim', manual = false): P
           overlay[id] = { accountId: id, ok: true, state: 'traveling', at: Date.now() }
           rows.push(rowOf(account, 'dispatched'))
         } else {
-          rows.push(rowOf(account, 'error', { error: `派发失败（code=${String(depart['code'])}）` }))
+          // 无猫（含协议未同意）→ 同意协议 + 领养第一只（+300 积分），下一轮自动派出；
+          // 领养门槛未达标（first_buddy 未完成）当日不再重试
+          const message = typeof depart['message'] === 'string' ? depart['message'] : typeof depart['msg'] === 'string' ? depart['msg'] : ''
+          if (classifyDepartError(typeof depart['code'] === 'number' ? depart['code'] : undefined, message) === 'no-buddy') {
+            await fetchHttp(`${GROWTH_BUDDY_BASE}/agreement`, 'POST', { agree: true }, travelHeaders(account))
+            const first = (await fetchHttp(`${GROWTH_BUDDY_BASE}/first`, 'POST', {}, travelHeaders(account))) as Record<string, unknown>
+            const firstCode = first['code']
+            if (firstCode === 0 || firstCode === 200) {
+              overlay[id] = { accountId: id, ok: true, state: 'idle', at: Date.now(), message: '已领养 Buddy（+300 积分），下一轮自动派出' }
+              rows.push(rowOf(account, 'adopted'))
+            } else {
+              rows.push(rowOf(account, 'adopt-skip', { reason: '领养门槛未达标（先完成活跃上报解锁 first_buddy）' }))
+            }
+          } else {
+            rows.push(rowOf(account, 'error', { error: `派发失败（code=${String(depart['code'])}）` }))
+          }
         }
       } else if (status.state === 'idle' && status.dailyLimitReached) {
         overlay[id] = { accountId: id, ok: true, claimed: true, skip: 'daily-limit', state: 'idle', message: '累了，明天再来吧', at: Date.now() }
@@ -385,6 +424,116 @@ export async function travelCycle(mode: 'dispatch' | 'claim', manual = false): P
     return { status: 'ok', updated: Object.keys(overlay), accounts: rows }
   } finally {
     cycleState[busyKey] = false
+  }
+}
+
+// ------------------------------------------------- 成长任务（活跃上报/连登/抽奖）
+
+function growthHeaders(account: WbAccount): Record<string, string> {
+  return { ...buildAuthHeaders(account), Accept: 'application/json', 'x-client-platform': 'web', Origin: GROWTH_WEB_BASE, Referer: `${GROWTH_WEB_BASE}/profile/growth-center` }
+}
+
+/**
+ * 活跃上报（chat_request_send）：点亮连登 + 解锁领养前置任务。**必须用计费
+ * 指纹**（单段 WorkBuddy UA、无 web 头）——web 指纹上报被服务端 200 静默丢弃
+ * （wb 域 2026-10-13 实测：计费指纹 streak.days=1，web 指纹 days=0）。
+ */
+async function reportChatActivity(account: WbAccount): Promise<{ ok: boolean; error?: string }> {
+  const uid = getStr(account, 'uid') ?? ''
+  const now = nowMs()
+  const conversationId = `wbdesk-${now}`
+  const event = buildChatActivityEvent(uid, conversationId, now)
+  const response = (await fetchHttp(`https://www.codebuddy.cn${REPORT_PATH}`, 'POST', [event], {
+    ...buildAuthHeaders(account),
+    Accept: 'application/json',
+    'user-agent': 'WorkBuddy/5.5.2',
+  })) as Record<string, unknown>
+  const code = response['code']
+  if (code === 0 || code === 200) return { ok: true }
+  const message = typeof response['message'] === 'string' ? response['message'] : typeof response['msg'] === 'string' ? response['msg'] : ''
+  return { ok: false, error: `code=${String(code ?? '?')} ${message}`.trim().slice(0, 160) }
+}
+
+/**
+ * 成长任务巡检（幂等，每号每天一轮）：活跃上报（点亮连登）→ 连登档位兑换
+ * （非 locked 非 claimed 即兑）→ 抽奖次数抽完。全部零对话消耗。
+ */
+export async function growthCycle(manual = false): Promise<unknown> {
+  if (cycleState.growthBusy) return manual ? { status: 'skipped', reason: 'already_running' } : undefined
+  cycleState.growthBusy = true
+  try {
+    await loadAccounts()
+    const today = new Date().toISOString().slice(0, 10)
+    const state = rollGrowthStateToToday(
+      (await readJson<GrowthDayState>(dataFile('growth-state.json'))) ?? { date: today, reported: {}, checked: {} },
+      today,
+    )
+    const rows: Record<string, unknown>[] = []
+    for (const account of currentAccounts()) {
+      const id = getStr(account, 'id') ?? ''
+      const name = getStr(account, 'email') ?? getStr(account, 'nickname') ?? 'unknown'
+      const row: Record<string, unknown> = { accountId: id, name, outcome: 'ok' }
+      if (!supportsGrowth(variantOf(account))) {
+        rows.push({ ...row, outcome: 'skipped', reason: 'unsupported_variant' })
+        continue
+      }
+      if (isEnvelope(account, 'access_token')) {
+        rows.push({ ...row, outcome: 'skipped', reason: 'envelope_credentials' })
+        continue
+      }
+      // 1) 活跃上报（每号每天 1 次，日活跃奖励按天去重）
+      if (!state.reported[id]) {
+        const report = await reportChatActivity(account)
+        if (report.ok) {
+          state.reported[id] = true
+          row.reported = true
+        } else {
+          row.outcome = 'error'
+          row.error = `活跃上报失败：${report.error}`
+        }
+      } else {
+        row.reported = 'done'
+      }
+      // 2) 连登档位兑换
+      const streakResponse = (await fetchHttp(`${GROWTH_WEB_BASE}/activity/growth/streak`, 'GET', undefined, growthHeaders(account))) as Record<string, unknown>
+      const streak = parseStreakFull(streakResponse?.data)
+      row.streakDays = streak.days
+      const redeemed: string[] = []
+      for (const tier of redeemableTiers(streak)) {
+        const redeem = (await fetchHttp(`${GROWTH_WEB_BASE}/activity/growth/redeem`, 'POST', { tier, client_token: randomUUID() }, growthHeaders(account))) as Record<string, unknown>
+        const code = redeem['code']
+        if (code === 0 || code === 200) redeemed.push(tier)
+        else row.redeemNote = `${tier} 兑换未成功（code=${String(code ?? '?')}）`
+      }
+      if (redeemed.length > 0) row.redeemed = redeemed
+      // 3) 抽奖（次数来自连登兑换，抽完为止）
+      const lotteryResponse = (await fetchHttp(`${GROWTH_WEB_BASE}/activity/growth/lottery/summary`, 'GET', undefined, growthHeaders(account))) as Record<string, unknown>
+      let chances = parseLotteryChances(lotteryResponse?.data)
+      const prizes: string[] = []
+      let draws = 0
+      while (chances > 0 && draws < LOTTERY_DRAW_CAP) {
+        const draw = (await fetchHttp(`${GROWTH_WEB_BASE}/activity/growth/lottery/draw`, 'POST', { client_token: randomUUID() }, growthHeaders(account))) as Record<string, unknown>
+        draws += 1
+        if (draw['code'] === 0 || draw['code'] === 200) {
+          chances -= 1
+          prizes.push(JSON.stringify(draw['data'] ?? {}).slice(0, 120))
+        } else {
+          break
+        }
+      }
+      if (draws > 0) {
+        row.draws = draws
+        row.prizes = prizes
+      }
+      state.checked[id] = true
+      rows.push(row)
+    }
+    await writeConfig('growth-state.json', state)
+    const abnormal = rows.filter((row) => row.outcome === 'error').length
+    pushLog(abnormal > 0 ? 'warn' : 'info', `成长任务巡检完成（${rows.length} 个账号，异常 ${abnormal}）`, { rows })
+    return { status: 'ok', accounts: rows }
+  } finally {
+    cycleState.growthBusy = false
   }
 }
 

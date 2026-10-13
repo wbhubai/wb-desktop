@@ -229,6 +229,8 @@ interface UsageEntry {
   credit: number | null
   ok: boolean
   error?: string
+  /** 错误分类（= error.type：rate_limit_error/authentication_error/... 或 client_aborted） */
+  category?: string
 }
 
 const usageRing: UsageEntry[] = []
@@ -887,7 +889,7 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
   return response
 }
 
-function tallyUsage(account: WbAccount, model: string, usage: UpstreamChunk['usage'], ok: boolean, error?: string): void {
+function tallyUsage(account: WbAccount, model: string, usage: UpstreamChunk['usage'], ok: boolean, error?: string, category?: string): void {
   if (ok) learnModelUsage(model)
   recordUsage({
     ts: Date.now(),
@@ -898,6 +900,7 @@ function tallyUsage(account: WbAccount, model: string, usage: UpstreamChunk['usa
     credit: usage?.credit ?? null,
     ok,
     ...(error !== undefined ? { error } : {}),
+    ...(category !== undefined ? { category } : {}),
   })
 }
 
@@ -973,7 +976,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     response = await upstreamCall(active.account, body, controller.signal)
   } catch (error) {
     if (controller.signal.aborted) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
       return
     }
     throw error
@@ -981,7 +984,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
     const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
-    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200))
+    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200), mapped.type)
     res.writeHead(response.status, {
       'content-type': 'application/json; charset=utf-8',
       ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
@@ -1131,7 +1134,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   // 记账：此前 streamSse 从未累积导致流式调用全部漏记——这是「刷新统计后
   // token 使用记录不更新」的根因。客户端中止（上游 usage 不会到达）如实标记。
   if (controller.signal.aborted && streamUsage === undefined) {
-    tallyUsage(active.account, model, undefined, false, 'client_aborted')
+    tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
   } else {
     tallyUsage(active.account, model, streamUsage, true)
   }
@@ -1337,7 +1340,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     response = await upstreamCall(active.account, openaiBody, controller.signal)
   } catch (error) {
     if (controller.signal.aborted) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
       return
     }
     throw error
@@ -1345,7 +1348,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
     const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
-    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200))
+    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200), mapped.type)
     res.writeHead(response.status, {
       'content-type': 'application/json; charset=utf-8',
       ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
@@ -1402,7 +1405,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     res.end()
     // 客户端中止（上游 usage 不会到达）如实标记；正常结束按最终 usage 入账
     if (controller.signal.aborted && translator.getUsage() === undefined) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
     } else {
       tallyUsage(active.account, model, translator.getUsage(), true)
     }

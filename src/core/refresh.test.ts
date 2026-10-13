@@ -77,17 +77,47 @@ describe('keepalive cycle', () => {
     expect(calls).toBe(0)
     expect(result.refreshed).toHaveLength(0)
   })
-  it('failure marks needs_relogin with the code and message', async () => {
+  it('single failure counts but does not mark needs_relogin; 3 consecutive does', async () => {
     const http = async () => ({ code: 403, message: 'forbidden' })
     const updates: WbAccount[] = []
+    const account = { id: 'a', email: 'a@x.com', access_token: 'at', refresh_token: 'rt' }
     const result = await runKeepaliveCycle(
-      [{ id: 'a', email: 'a@x.com', access_token: 'at', refresh_token: 'rt' }],
+      [{ ...account }],
       { keepaliveDays: 0 },
-      (updated) => updates.push(updated),
+      (updated) => updates.push({ ...updated }),
       { now: () => NOW, http },
     )
     expect(result.refreshed[0]?.status).toBe('failed')
-    expect(updates[0]!['needs_relogin']).toBe(true)
-    expect(updates[0]!['needs_relogin_reason']).toContain('403')
+    expect(updates[0]!['needs_relogin']).toBeUndefined()
+    expect(updates[0]!['refresh_fail_count']).toBe(1)
+
+    // 连续第 2、3 次失败（以更新后的账号为基底，计数累加）
+    let current = updates[updates.length - 1]!
+    for (let i = 2; i <= 3; i++) {
+      updates.length = 0
+      await runKeepaliveCycle([current], { keepaliveDays: 0 }, (updated) => updates.push({ ...updated }), { now: () => NOW, http })
+      current = updates[updates.length - 1]!
+    }
+    expect(current['refresh_fail_count']).toBe(3)
+    expect(current['needs_relogin']).toBe(true)
+    expect(current['needs_relogin_reason']).toContain('403')
+  })
+
+  it('success clears the consecutive-fail counter', async () => {
+    const updates: WbAccount[] = []
+    const flaky = { count: 0 }
+    const http = async () => {
+      flaky.count += 1
+      return flaky.count <= 2 ? { code: 500, message: 'blip' } : { code: 0, data: { accessToken: 'new-at', refreshToken: 'new-rt', expiresAt: NOW + 3_600_000 } }
+    }
+    let current: WbAccount = { id: 'a', email: 'a@x.com', access_token: 'at', refresh_token: 'rt' }
+    for (let i = 0; i < 3; i++) {
+      let batch: WbAccount[] = []
+      await runKeepaliveCycle([current], { keepaliveDays: 0 }, (updated) => batch.push({ ...updated }), { now: () => NOW, http })
+      current = batch[batch.length - 1]!
+    }
+    expect(current['refresh_fail_count']).toBeUndefined()
+    expect(current['needs_relogin']).toBeUndefined()
+    expect(current['access_token']).toBe('new-at')
   })
 })

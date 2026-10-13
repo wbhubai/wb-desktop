@@ -83,7 +83,7 @@
       <div id="wbCheckinCfg"></div>
       <div class="row" style="margin-top:8px">
         <span>手动操作：</span>
-        <button class="act" data-act="checkin-run">立即签到一轮</button><span class="muted wbstate" data-state="checkin"></span>
+        <button class="act" data-act="checkin-run">立即签到一轮</button><button class="ghost" data-act="growth-run">成长任务（上报/连登/抽奖）</button><span class="muted wbstate" data-state="checkin"></span>
       </div>
     </div>
     <div class="card"><h3>猫猫旅行 <span class="muted">— 勾选「自动执行」并保存后，后台每 30 分钟自动派猫、每 15 分钟自动领取；手动按钮是一次性操作，不受勾选影响</span></h3>
@@ -121,6 +121,7 @@
         <button class="ghost" data-act="gw-model-add">添加</button>
       </div>
       <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
+      <div class="row" id="gwAccountsHealth" style="margin-top:4px; display:none"></div>
       <div class="row" style="margin-top:8px">
         <span class="muted">使用账号</span>
         <select id="gwAccount" style="min-width:200px"></select>
@@ -383,6 +384,14 @@ async function loadGateway() {
   const sel = document.getElementById('gwAccount');
   sel.innerHTML = (r.accounts || []).map(a => '<option value="' + esc(a.id) + '"' + (r.activeAccountId === a.id ? ' selected' : '') + '>' + esc(a.name) + (a.usable ? '' : '（信封态不可用）') + '</option>').join('') || '<option>（无账号）</option>';
   if (!r.activeAccountId && (r.accounts || [])[0]) sel.value = r.accounts[0].id;
+  const healthEl = document.getElementById('gwAccountsHealth');
+  if (healthEl) {
+    const health = (r.accountsHealth || []).filter(a => a.errors > 0);
+    healthEl.innerHTML = health.length
+      ? health.map(a => '<span class="tag warn" title="最近 ' + a.total + ' 次调用失败 ' + a.errors + ' 次">' + esc(a.name) + '：失败 ' + a.errors + '/' + a.total + '</span>').join(' ')
+      : '';
+    healthEl.style.display = health.length ? '' : 'none';
+  }
   document.getElementById('gwThinking').value = r.thinking || 'default';
   renderModelCatalog(r.modelCatalog || (r.models || []).map(function (id) { return { id: id, source: 'manual' }; }));
   renderSignatures(r.signatureRewrites || []);
@@ -400,8 +409,9 @@ async function loadGateway() {
       s.byModel.map(m => '<tr><td>' + esc(m.model) + '</td><td>' + m.requests + '</td><td>' + m.promptTokens + ' + ' + m.completionTokens + '</td><td>' + (m.credit === null ? '—' : m.credit) + '</td></tr>').join('') + '</table>';
   }
   html += '<div class="muted" style="margin-top:10px">最近 ' + Math.min(usage.length, 30) + ' / ' + usage.length + ' 条调用明细</div>';
-  html += '<table style="margin-top:4px"><tr><th>时间</th><th>账号</th><th>模型</th><th>tokens</th><th>积分</th><th>状态</th></tr>' +
-    (usage.length ? usage.slice(0, 30).map(u => '<tr><td>' + new Date(u.ts).toLocaleTimeString() + '</td><td>' + esc(u.account) + '</td><td>' + esc(u.model) + '</td><td>' + (u.promptTokens || 0) + ' + ' + (u.completionTokens || 0) + '</td><td>' + (u.credit === null || u.credit === undefined ? '—' : u.credit) + '</td><td>' + (u.ok ? '<span class="tag ok">成功</span>' : '<span class="tag err" title="' + esc(u.error || '') + '">失败</span>') + '</td></tr>').join('') : '<tr><td colspan="6" class="muted">暂无调用记录</td></tr>') + '</table>';
+  const categoryLabel = { rate_limit_error: '限流', authentication_error: '鉴权', not_found_error: '不存在', invalid_request_error: '请求', overloaded_error: '过载', api_error: '服务端', client_aborted: '已取消' };
+  html += '<table style="margin-top:4px"><tr><th>时间</th><th>账号</th><th>模型</th><th>tokens</th><th>积分</th><th>状态</th><th>分类</th></tr>' +
+    (usage.length ? usage.slice(0, 30).map(u => '<tr><td>' + new Date(u.ts).toLocaleTimeString() + '</td><td>' + esc(u.account) + '</td><td>' + esc(u.model) + '</td><td>' + (u.promptTokens || 0) + ' + ' + (u.completionTokens || 0) + '</td><td>' + (u.credit === null || u.credit === undefined ? '—' : u.credit) + '</td><td>' + (u.ok ? '<span class="tag ok">成功</span>' : '<span class="tag err" title="' + esc(u.error || '') + '">失败</span>') + '</td><td>' + (u.category ? '<span class="tag ' + (u.category === 'rate_limit_error' || u.category === 'client_aborted' ? 'warn' : 'err') + '">' + esc(categoryLabel[u.category] || u.category) + '</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="7" class="muted">暂无调用记录</td></tr>') + '</table>';
   document.getElementById('gwUsage').innerHTML = html;
 }
 async function gwSaveAccount() {
@@ -417,37 +427,43 @@ async function gwSaveAccount() {
   setTimeout(() => { btn.textContent = '保存'; }, 1500);
 }
 function renderModelCatalog(catalog) {
-  const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
-  const ctx = function (m) {
-    if (!m.contextWindow) return '—';
-    return (m.contextWindow / 1000).toFixed(0) + 'K' + (m.maxOutputTokens ? ' / ' + (m.maxOutputTokens / 1000).toFixed(0) + 'K' : '');
-  };
-  const rows = (catalog || []).map(function (m) {
-    const meta = [];
-    if (m.multiplier !== undefined && m.multiplier !== null) meta.push(m.multiplier + 'x');
-    if (m.images) meta.push('图');
-    if (m.toolCall) meta.push('工具');
-    return '<tr>' +
-      '<td><b>' + esc(m.id) + '</b></td>' +
-      '<td>' + esc(m.name || '') + '</td>' +
-      '<td>' + esc(meta.join(' · ')) + '</td>' +
-      '<td>' + esc(ctx(m)) + '</td>' +
-      '<td>' + esc((m.tags || []).join('，')) + '</td>' +
-      '<td>' + esc(sourceLabel[m.source] || m.source || '') + '</td>' +
-      '<td>' + (m.lastSeenAt ? new Date(m.lastSeenAt).toLocaleString() : '—') + '</td>' +
-      '<td><button class="ghost" data-act="gw-model-del" data-id="' + esc(m.id) + '">移除</button></td>' +
-      '</tr>';
-  });
-  document.getElementById('gwModelCatalog').innerHTML = (catalog || []).length
-    ? '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows.join('') + '</table>'
-    : '<div class="muted">清单为空——点「同步官方目录」拉取官方模型列表</div>';
+  const el = document.getElementById('gwModelCatalog');
+  if (!(catalog || []).length) {
+    el.innerHTML = '<div class="muted">清单为空——点「同步官方目录」拉取官方模型列表</div>';
+    return;
+  }
+  const COLLAPSED = 5;
+  window.__modelCatalogFull = catalog;
+  const visible = window.__modelCatalogExpanded ? catalog : catalog.slice(0, COLLAPSED);
+  const rows = visible.map(function (m) { return modelCatalogRow(m); }).join('');
+  const toggle = catalog.length > COLLAPSED
+    ? '<div class="row" style="margin-top:4px"><button class="ghost" data-act="gw-models-toggle">' + (window.__modelCatalogExpanded ? '收起（共 ' + catalog.length + ' 个）' : '展开全部（共 ' + catalog.length + ' 个）') + '</button></div>'
+    : '';
+  el.innerHTML = '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows + '</table>' + toggle;
 }
-function currentModelIds() {
-  const input = document.getElementById('gwModelAdd');
-  const ids = [];
-  document.querySelectorAll('#gwModelCatalog tbody tr td:first-child b').forEach(function (b) { ids.push(b.textContent); });
-  void input;
-  return ids;
+function modelCatalogRow(m) {
+  const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
+  const ctxText = m.contextWindow
+    ? (m.contextWindow / 1000).toFixed(0) + 'K' + (m.maxOutputTokens ? ' / ' + (m.maxOutputTokens / 1000).toFixed(0) + 'K' : '')
+    : '—';
+  const meta = [];
+  if (m.multiplier !== undefined && m.multiplier !== null) meta.push(m.multiplier + 'x');
+  if (m.images) meta.push('图');
+  if (m.toolCall) meta.push('工具');
+  return '<tr>' +
+    '<td><b>' + esc(m.id) + '</b></td>' +
+    '<td>' + esc(m.name || '') + '</td>' +
+    '<td>' + esc(meta.join(' · ')) + '</td>' +
+    '<td>' + esc(ctxText) + '</td>' +
+    '<td>' + esc((m.tags || []).join('，')) + '</td>' +
+    '<td>' + esc(sourceLabel[m.source] || m.source || '') + '</td>' +
+    '<td>' + (m.lastSeenAt ? new Date(m.lastSeenAt).toLocaleString() : '—') + '</td>' +
+    '<td><button class="ghost" data-act="gw-model-del" data-id="' + esc(m.id) + '">移除</button></td>' +
+    '</tr>';
+}
+function gwModelsToggle(btn) {
+  window.__modelCatalogExpanded = !window.__modelCatalogExpanded;
+  renderModelCatalog(window.__modelCatalogFull || []);
 }
 async function gwModelAdd(btn) {
   const input = document.getElementById('gwModelAdd');
@@ -589,11 +605,13 @@ document.addEventListener('click', async (ev) => {
       case 'checkin-run': await wbAction('签到', '/checkin/run'); break;
       case 'travel-save': await wbAction('旅行配置', '/travel/config', { enabled: document.getElementById('wbTravelEnabled').checked }); break;
       case 'travel-run': await wbAction('派猫', '/travel/run'); break;
+      case 'growth-run': await wbAction('成长任务', '/growth/run'); break;
       case 'travel-claim': await wbAction('领取', '/travel/claim'); break;
       case 'travel-refresh': await wbTravelRefresh(); break;
       case 'gw-key-copy': await navigator.clipboard.writeText(document.getElementById('gwKey').value); break;
       case 'gw-key-rotate': await gwRotateKey(); break;
       case 'gw-models-sync': await gwSyncModels(btn); break;
+      case 'gw-models-toggle': await gwModelsToggle(btn); break;
       case 'gw-model-add': await gwModelAdd(btn); break;
       case 'gw-model-del': await gwModelDel(btn); break;
       case 'gw-models-refresh': await gwRefreshModels(btn); break;
