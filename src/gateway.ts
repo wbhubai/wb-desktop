@@ -215,10 +215,58 @@ export interface SignatureRewrite {
   replacement: string
 }
 
-/** 内置签名表（2026-10-08 现场捕获定位；可作为「恢复默认」的基准）。 */
+/**
+ * 内置签名改写表（「恢复默认」的基准）。上游内容审核按**逐字精确匹配**拦截
+ * 指纹句，一词之差即绕过、语义不变。逐字实测来源：workbuddy2api-panel
+ * sanitize.go（2026-09/10 现场捕获）。注意两条 Main branch 变体并存是有意的：
+ * 长句版兼容存量迁移（旧快照按 match 剔除），短句版覆盖桌面端无后缀形态；
+ * 长句先于短句应用（生效表保序），改写后短句不再命中。
+ * `11128` 裸数字改写为反探测自指：请求体出现任何形态的 11128 都会整单拦截
+ * （上游据此识别"在讨论其内部错误码"的请求），改写后 Agent 对话/报错回显
+ * 不会再自触发；代价是用户消息里的这串数字同样被改写——但它出现即拦截条件。
+ */
 export const DEFAULT_SIGNATURE_REWRITES: SignatureRewrite[] = [
-  { match: 'Main branch (you will usually use this for PRs): main', replacement: 'Main branch: main' },
+  { match: "You are Claude Code, Anthropic's official CLI for Claude", replacement: "You are Claude Code, Anthropic's official CLI tool for Claude" },
+  { match: 'Main branch (you will usually use this for PRs): main', replacement: 'Default branch (you will usually use this for PRs): main' },
+  { match: 'Main branch (you will usually use this for PRs)', replacement: 'Default branch (you will usually use this for PRs)' },
+  { match: 'You are a coding agent running in the Codex CLI, a terminal-based coding assistant.', replacement: 'You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.' },
+  { match: 'To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues', replacement: 'To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues' },
+  { match: '11128', replacement: '11-128' },
 ]
+
+/**
+ * 11128 持续拦截的最终兜底：极简中性系统提示词（替换全部 system/developer）。
+ * 仅在改写+重发之后仍被拦时使用一次——客户端项目上下文会丢，宁缺毋滥。
+ */
+export const DEGRADED_SYSTEM_PROMPT =
+  "You are a helpful assistant. Respond in the user's language, follow the user's instructions, and be direct and concise."
+
+/** 11128 兜底请求体：删除全部 system/developer，头部插入一条极简中性 system，
+ * user/assistant/tool 消息逐字不动（纯函数，可单测）。 */
+export function buildDegradedBody(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = Array.isArray(body['messages']) ? (body['messages'] as Record<string, unknown>[]) : []
+  return {
+    ...body,
+    messages: [{ role: 'system', content: DEGRADED_SYSTEM_PROMPT }, ...messages.filter((message) => message['role'] !== 'system' && message['role'] !== 'developer')],
+  }
+}
+
+/** 出站文本的 header/cc_ 指纹剥离（正则形态，硬编码不开放给用户改写表）：
+ * 键值段整段删除、残留裸键名缩写、cc_* 尾随键值循环清理——裸键名与键值形态
+ * 都会触发 11128（2026-09-13 实验 F4 实测）。 */
+function stripHeaderFingerprints(text: string): string {
+  let out = text
+  if (/(?:x-anthropic-billing-header|cc_[a-z0-9_]+=)/i.test(out)) {
+    out = out.replace(/x-anthropic-billing-header:[^;\n]*;?\s*/gi, '')
+    let prev = out
+    do {
+      prev = out
+      out = out.replace(/cc_[a-z0-9_]+=[^;\n]*;?\s*/gi, '')
+    } while (prev !== out)
+    out = out.replace(/x-anthropic-billing-header/gi, 'x-anthropic-billing-hdr')
+  }
+  return out
+}
 
 interface UsageEntry {
   ts: number
@@ -700,20 +748,20 @@ function neutralizeSignatures(text: string, rewrites: SignatureRewrite[]): strin
   return out
 }
 
-function sanitizeBody(body: Record<string, unknown>, rewrites: SignatureRewrite[]): Record<string, unknown> {
+export function sanitizeBody(body: Record<string, unknown>, rewrites: SignatureRewrite[]): Record<string, unknown> {
   const messages = body['messages']
   if (!Array.isArray(messages)) return body
   const cleaned = messages.map((message) => {
     const msg = message as { role?: string; content?: unknown }
     if (typeof msg.content === 'string') {
-      return { ...msg, content: neutralizeSignatures(msg.content, rewrites) }
+      return { ...msg, content: stripHeaderFingerprints(neutralizeSignatures(msg.content, rewrites)) }
     }
     if (Array.isArray(msg.content)) {
       return {
         ...msg,
         content: (msg.content as { type?: string; text?: string }[]).map((block) =>
           block && typeof block === 'object' && typeof block['text'] === 'string'
-            ? { ...block, text: neutralizeSignatures(block['text'], rewrites) }
+            ? { ...block, text: stripHeaderFingerprints(neutralizeSignatures(block['text'], rewrites)) }
             : block,
         ),
       }
@@ -824,10 +872,15 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
       body: JSON.stringify(effective),
       signal: controller.signal,
     })
-  // 拿到响应即装空闲看门狗并撤首包定时器；重试产生的新响应需重新装
+  // 拿到响应即装空闲看门狗并撤首包定时器；重试产生的新响应需重新装。
+  // 必须构造**全新 Response**：undici 的 .text() 读内部 body 而非公开 getter，
+  // defineProperty 换 body 会让 .text() 与 pipeTo 争抢同一条流（already been read）。
   const sealBody = (res: Response): Response => {
     clearTimeout(ttfbTimer)
-    if (res.body) Object.defineProperty(res, 'body', { value: withIdleWatchdog(res.body, controller), configurable: true })
+    if (res.body) {
+      const watched = withIdleWatchdog(res.body, controller)
+      return new Response(watched, { status: res.status, statusText: res.statusText, headers: res.headers })
+    }
     return res
   }
   let response: Response
@@ -867,12 +920,28 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
       await new Promise((resolve) => setTimeout(resolve, 800))
       response = sealBody(await attempt(UPSTREAM_HOST))
       if (response.status >= 500) response = sealBody(await attempt(UPSTREAM_FAILOVER_HOST))
+      let retryText = response.ok ? '' : await response.text().catch(() => '')
+      // 重发仍被拦：最后兜底——system/developer 整体替换为极简中性提示词再试
+      // 一次（客户端项目上下文会丢，故仅此一次、仅 11128 持续时触发）
+      if (retryText.includes('11128')) {
+        const degraded = buildDegradedBody(effective)
+        const attemptDegraded = async (host: string): Promise<Response> =>
+          await fetch(host + UPSTREAM_PATH, {
+            method: 'POST',
+            headers: { ...(await gatewayHeaders(account)), 'content-type': 'application/json' },
+            body: JSON.stringify(degraded),
+            signal: controller.signal,
+          })
+        response = sealBody(await attemptDegraded(UPSTREAM_HOST))
+        if (response.status >= 500) response = sealBody(await attemptDegraded(UPSTREAM_FAILOVER_HOST))
+        retryText = response.ok ? '' : await response.text().catch(() => '')
+      }
+      console.log('[dbg] after degrade:', { status: response.status, ok: response.ok, locked: response.body?.locked })
       if (!response.ok) {
-        const retryText = await response.text().catch(() => '')
-        // 重发仍被拦：大概率命中了改写表未覆盖的新签名句——把处置指引写进
+        // 降级后仍拦：大概率命中了改写表未覆盖的新签名句——把处置指引写进
         // 错误消息（此前把上游 400 原文直接甩给客户端，用户无从下手）
         const hint = retryText.includes('11128')
-          ? `上游通道风控(11128)持续拦截：疑似命中改写表未覆盖的新签名句。请到「网关代理 → 高级：签名改写」添加规则；被拦请求体已转储至 ~/.wb-hub/gateway-debug/ 供定位。上游原文: ${retryText.slice(0, 150)}`
+          ? `上游通道风控(11128)持续拦截：改写与中性提示词兜底均未通过，疑似全新签名句。请到「网关代理 → 高级：签名改写」添加规则；被拦请求体已转储至 ~/.wb-hub/gateway-debug/ 供定位。上游原文: ${retryText.slice(0, 150)}`
           : retryText
         response = new Response(hint, {
           status: response.status,

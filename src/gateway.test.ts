@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   anthropicMessageStart,
   anthropicToOpenAi,
+  buildDegradedBody,
   createAnthropicStreamTranslator,
+  DEFAULT_SIGNATURE_REWRITES,
   deriveCustomRewrites,
   effectiveRewrites,
   estimateAnthropicInputTokens,
@@ -12,6 +14,7 @@ import {
   migrateModelCatalog,
   parseEnterpriseModels,
   parseModelCatalog,
+  sanitizeBody,
 } from './gateway.ts'
 import type { AnthropicBody, ModelInfo, UpstreamChunk } from './gateway.ts'
 
@@ -250,13 +253,17 @@ describe('signature rewrite storage migration', () => {
     const effective = effectiveRewrites([{ match: 'X', replacement: 'Y' }], undefined)
     expect(effective.length).toBeGreaterThanOrEqual(1)
     expect(effective.some((r) => r.match === 'X')).toBe(true)
-    // 应用更新内置表后，零配置用户自动获得新基线
-    expect(effective[0]).toMatchObject({ match: 'Main branch (you will usually use this for PRs): main' })
+    // 应用更新内置表后，零配置用户自动获得新基线（含 11128 反自指改写）
+    expect(effective.some((r) => r.match === '11128')).toBe(true)
+    expect(effective.some((r) => r.match === 'Main branch (you will usually use this for PRs): main')).toBe(true)
   })
 
   it('remote rules sit between builtin baseline and user customs', () => {
     const effective = effectiveRewrites([{ match: 'USER', replacement: 'u' }], [{ match: 'REMOTE', replacement: 'r' }])
-    expect(effective.map((r) => r.match)).toEqual(['Main branch (you will usually use this for PRs): main', 'REMOTE', 'USER'])
+    const ids = effective.map((r) => r.match)
+    expect(ids.indexOf('REMOTE')).toBeGreaterThan(0)
+    expect(ids.indexOf('REMOTE')).toBeLessThan(ids.indexOf('USER'))
+    expect(ids.lastIndexOf('USER')).toBe(ids.length - 1)
   })
 
   it('reset (empty desired list) derives to empty custom → builtin baseline only', () => {
@@ -333,5 +340,64 @@ describe('dual-endpoint catalog', () => {
     expect(merged).toHaveLength(2)
     expect(merged.find((m) => m.id === 'hy3')?.multiplier).toBe(0)
     expect(merged.find((m) => m.id === 'auto')?.contextWindow).toBe(256000)
+  })
+})
+
+
+describe('11128 defense layers', () => {
+  it('sanitizeBody rewrites the self-referential 11128 literal in messages', () => {
+    const body = { model: 'hy3', messages: [{ role: 'user', content: '错误码 11128 是什么意思？' }] } as unknown as Record<string, unknown>
+    const out = sanitizeBody(body, DEFAULT_SIGNATURE_REWRITES)
+    const content = (out.messages as { content: string }[])[0]!.content
+    expect(content).not.toContain('11128')
+    expect(content).toContain('11-128')
+  })
+
+  it('stripHeaderFingerprints: key-value segment removed, bare name abbreviated, cc_ kv loop-cleaned', () => {
+    const body = {
+      model: 'hy3',
+      messages: [{
+        role: 'user',
+        content: '配置示例：x-anthropic-billing-header: abc123; 以及 cc_version=1.2.3; cc_entrypoint=cli; 还有裸键名 x-anthropic-billing-header 引用',
+      }],
+    } as unknown as Record<string, unknown>
+    const out = sanitizeBody(body, DEFAULT_SIGNATURE_REWRITES)
+    const content = (out.messages as { content: string }[])[0]!.content
+    expect(content).not.toContain('abc123')
+    expect(content).not.toContain('cc_version=1.2.3')
+    expect(content).not.toContain('cc_entrypoint=cli')
+    expect(content).toContain('x-anthropic-billing-hdr')
+    expect(content).not.toMatch(/x-anthropic-billing-header/i)
+  })
+
+  it('known signature sentences rewrite by one word', () => {
+    const body = {
+      model: 'hy3',
+      messages: [{ role: 'system', content: "You are Claude Code, Anthropic's official CLI for Claude. Main branch (you will usually use this for PRs): main" }],
+    } as unknown as Record<string, unknown>
+    const out = sanitizeBody(body, DEFAULT_SIGNATURE_REWRITES)
+    const content = (out.messages as { content: string }[])[0]!.content
+    expect(content).toContain("official CLI tool for Claude")
+    expect(content).toContain('Default branch (you will usually use this for PRs): main')
+    expect(content).not.toContain('Main branch (you will usually use this for PRs)')
+  })
+
+  it('buildDegradedBody drops system/developer and injects one neutral system', () => {
+    const body = {
+      model: 'hy3',
+      messages: [
+        { role: 'system', content: 'client system prompt' },
+        { role: 'developer', content: 'dev prompt' },
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' },
+      ],
+    } as unknown as Record<string, unknown>
+    const out = buildDegradedBody(body)
+    const messages = out.messages as { role: string; content: string }[]
+    expect(messages).toHaveLength(3)
+    expect(messages[0]!.role).toBe('system')
+    expect(messages[0]!.content).toContain('helpful assistant')
+    expect(messages[1]!.role).toBe('user')
+    expect(messages[2]!.role).toBe('assistant')
   })
 })
