@@ -226,6 +226,30 @@ function keyOk(req: IncomingMessage, key: string, url: URL): boolean {
   return bearer === key || xKey === key || queryKey === key
 }
 
+/**
+ * 上游错误 → 标准错误语义。Agent 的退避重试策略依赖 error.type 与
+ * Retry-After：429 该按提示等待、"模型不存在"不该重试——此前一律
+ * api_error 会导致对不可恢复错误做指数退避。
+ */
+export function mapUpstreamError(
+  status: number,
+  bodyText: string,
+  retryAfterHeader?: string | null,
+): { type: string; message: string; retryAfterSec?: number } {
+  let type = 'api_error'
+  if (status === 401 || status === 403) type = 'authentication_error'
+  else if (status === 404) type = 'not_found_error'
+  else if (status === 429) type = 'rate_limit_error'
+  else if (status === 529) type = 'overloaded_error'
+  else if (status === 400) type = bodyText.includes('service info not found') ? 'not_found_error' : 'invalid_request_error'
+  const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN
+  return {
+    type,
+    message: (bodyText || String(status)).slice(0, 300),
+    ...(Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? { retryAfterSec: Math.ceil(retryAfterSec) } : {}),
+  }
+}
+
 // ---------------------------------------------------- anthropic → openai
 
 export interface AnthropicBody {
@@ -236,7 +260,8 @@ export interface AnthropicBody {
   stream?: boolean
   temperature?: number
   tools?: { name: string; description?: string; input_schema?: unknown }[]
-  tool_choice?: { type: 'auto' | 'any' | 'tool'; name?: string }
+  tool_choice?: { type: 'auto' | 'any' | 'tool' | 'none'; name?: string }
+  stop_sequences?: unknown
 }
 
 interface ContentBlock {
@@ -248,6 +273,7 @@ interface ContentBlock {
   input?: unknown
   content?: unknown
   tool_use_id?: string
+  source?: unknown
 }
 
 type OpenAiMessage = {
@@ -265,6 +291,27 @@ function contentToText(content: unknown): string {
       .join('')
   }
   return ''
+}
+
+/**
+ * Anthropic image 块 → OpenAI image_url（base64 转 data URL，url 源直通）。
+ * 上游若不支持视觉会显式报错——此前图片块被静默丢弃，Agent 发截图会得到
+ * "没看见图"的回答，比报错严重。
+ */
+function imageBlockToOpenAi(block: ContentBlock): { type: 'image_url'; image_url: { url: string } } | undefined {
+  const source = (block.source && typeof block.source === 'object' ? block.source : {}) as {
+    type?: string
+    media_type?: string
+    data?: string
+    url?: string
+  }
+  if (source.type === 'base64' && typeof source.data === 'string' && source.data !== '') {
+    return { type: 'image_url', image_url: { url: `data:${source.media_type ?? 'image/png'};base64,${source.data}` } }
+  }
+  if (source.type === 'url' && typeof source.url === 'string' && source.url !== '') {
+    return { type: 'image_url', image_url: { url: source.url } }
+  }
+  return undefined
 }
 
 /** Full Anthropic→OpenAI mapping: system, tools, tool_use, tool_result. */
@@ -291,6 +338,10 @@ export function anthropicToOpenAi(body: AnthropicBody): Record<string, unknown> 
         textBuffer += String(block.text ?? '')
       } else if (block.type === 'thinking') {
         // upstream has no thinking-history field; drop
+      } else if (block.type === 'image' && !isAssistant) {
+        flushText()
+        const part = imageBlockToOpenAi(block)
+        if (part) messages.push({ role: 'user', content: [part] })
       } else if (block.type === 'tool_use' && isAssistant) {
         toolCalls.push({
           id: String(block.id ?? `call_${toolCalls.length}`),
@@ -299,7 +350,18 @@ export function anthropicToOpenAi(body: AnthropicBody): Record<string, unknown> 
         })
       } else if (block.type === 'tool_result' && !isAssistant) {
         flushText()
-        messages.push({ role: 'tool', content: contentToText(block.content), tool_call_id: String(block.tool_use_id ?? '') })
+        // tool_result 内容可为 string 或块数组；OpenAI 的 tool 消息只能带文本，
+        // 截图等图片拆成紧随其后的 user 消息（LiteLLM 同款语义），不再静默丢图
+        const parts: ContentBlock[] = Array.isArray(block.content)
+          ? (block.content as ContentBlock[])
+          : [{ type: 'text', text: contentToText(block.content) }]
+        const text = parts
+          .filter((part) => part && part.type === 'text')
+          .map((part) => String(part.text ?? ''))
+          .join('')
+        messages.push({ role: 'tool', content: text, tool_call_id: String(block.tool_use_id ?? '') })
+        const images = parts.map(imageBlockToOpenAi).filter((part) => part !== undefined)
+        if (images.length > 0) messages.push({ role: 'user', content: images })
       }
     }
     if (toolCalls.length > 0) {
@@ -320,7 +382,9 @@ export function anthropicToOpenAi(body: AnthropicBody): Record<string, unknown> 
       ? 'required'
       : body.tool_choice?.type === 'tool'
         ? { type: 'function', function: { name: body.tool_choice.name ?? '' } }
-        : undefined
+        : body.tool_choice?.type === 'none'
+          ? 'none'
+          : undefined
   return {
     model: body.model,
     messages,
@@ -329,6 +393,7 @@ export function anthropicToOpenAi(body: AnthropicBody): Record<string, unknown> 
     ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
     ...(tools !== undefined ? { tools } : {}),
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
+    ...(Array.isArray(body.stop_sequences) && body.stop_sequences.length > 0 ? { stop: body.stop_sequences.map(String) } : {}),
   }
 }
 
@@ -384,7 +449,7 @@ export interface UpstreamChunk {
   usage?: { prompt_tokens?: number; completion_tokens?: number; credit?: number }
 }
 
-async function upstreamCall(account: WbAccount, body: Record<string, unknown>): Promise<Response> {
+async function upstreamCall(account: WbAccount, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   const config = await gatewayConfig()
   const effective = sanitizeBody({ ...body }, config.signatureRewrites ?? DEFAULT_SIGNATURE_REWRITES)
   if (config.thinking === 'disabled') {
@@ -398,6 +463,7 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>): 
       method: 'POST',
       headers: { ...(await gatewayHeaders(account)), 'content-type': 'application/json' },
       body: JSON.stringify(effective),
+      ...(signal ? { signal } : {}),
     })
   let response = await attempt(UPSTREAM_HOST)
   if (response.status >= 500) response = await attempt(UPSTREAM_FAILOVER_HOST)
@@ -517,12 +583,30 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   }
   body = forwarded
   const model = String(body['model'] ?? '')
-  const response = await upstreamCall(active.account, body)
+  // 客户端断开即中止上游（实测中断不扣费，见 2026-10-13 计费实验）
+  const controller = new AbortController()
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort()
+  })
+  let response: Response
+  try {
+    response = await upstreamCall(active.account, body, controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+      return
+    }
+    throw error
+  }
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
+    const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
     tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200))
-    res.writeHead(response.status, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ error: { message: errorText.slice(0, 300), type: 'api_error' } }))
+    res.writeHead(response.status, {
+      'content-type': 'application/json; charset=utf-8',
+      ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
+    })
+    res.end(JSON.stringify({ error: { message: mapped.message, type: mapped.type } }))
     return
   }
   if (!response.body) {
@@ -665,8 +749,12 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   if (streamBuffered && !res.writableEnded) res.write(streamBuffered)
   res.end()
   // 记账：此前 streamSse 从未累积导致流式调用全部漏记——这是「刷新统计后
-  // token 使用记录不更新」的根因。现在即使客户端中途断开也如实入账。
-  tallyUsage(active.account, model, streamUsage, true)
+  // token 使用记录不更新」的根因。客户端中止（上游 usage 不会到达）如实标记。
+  if (controller.signal.aborted && streamUsage === undefined) {
+    tallyUsage(active.account, model, undefined, false, 'client_aborted')
+  } else {
+    tallyUsage(active.account, model, streamUsage, true)
+  }
 }
 
 // ------------------------------------------- anthropic ↔ openai messages
@@ -815,6 +903,23 @@ export function anthropicMessageStart(model: string): AnthropicStreamEvent {
   }
 }
 
+/**
+ * 本地估算 Anthropic 请求的 input tokens（粗略）：CJK ≈ 1 token/字，
+ * 其他字符 ≈ 1 token/4 字符；tools 定义也计入。供 count_tokens 端点做
+ * 上下文管理用——不花积分、非计费口径。
+ */
+export function estimateAnthropicInputTokens(body: AnthropicBody): number {
+  let text = contentToText(body.system)
+  for (const message of body.messages ?? []) text += contentToText(message.content)
+  if (Array.isArray(body.tools)) {
+    for (const tool of body.tools as { name?: unknown; description?: unknown; input_schema?: unknown }[]) {
+      text += `${String(tool.name ?? '')}${String(tool.description ?? '')}${JSON.stringify(tool.input_schema ?? '')}`
+    }
+  }
+  const cjk = (text.match(/[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af\uf900-\ufaff]/g) ?? []).length
+  return Math.ceil(cjk + (text.length - cjk) / 4)
+}
+
 async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const config = await gatewayConfig()
   const suppressReasoning = config.thinking === 'disabled' // 与 openai 路径同语义：出口侧拦思考内容
@@ -841,13 +946,31 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   }
   const openaiBody = anthropicToOpenAi(anthropic)
   openaiBody['stream'] = true
-  const response = await upstreamCall(active.account, openaiBody)
   const model = String(anthropic.model ?? '')
+  // 客户端断开即中止上游（实测中断不扣费，见 2026-10-13 计费实验）
+  const controller = new AbortController()
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort()
+  })
+  let response: Response
+  try {
+    response = await upstreamCall(active.account, openaiBody, controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) {
+      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+      return
+    }
+    throw error
+  }
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
+    const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
     tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200))
-    res.writeHead(response.status, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: errorText.slice(0, 300) } }))
+    res.writeHead(response.status, {
+      'content-type': 'application/json; charset=utf-8',
+      ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
+    })
+    res.end(JSON.stringify({ type: 'error', error: { type: mapped.type, message: mapped.message } }))
     return
   }
   if (!response.body) {
@@ -897,8 +1020,12 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     }
     for (const out of translator.finish(truncated)) emit(out)
     res.end()
-    // 与 openai 流式路径同语义：即使客户端中途断开也如实入账
-    tallyUsage(active.account, model, translator.getUsage(), true)
+    // 客户端中止（上游 usage 不会到达）如实标记；正常结束按最终 usage 入账
+    if (controller.signal.aborted && translator.getUsage() === undefined) {
+      tallyUsage(active.account, model, undefined, false, 'client_aborted')
+    } else {
+      tallyUsage(active.account, model, translator.getUsage(), true)
+    }
     return
   }
 
@@ -976,6 +1103,25 @@ export async function handleGateway(req: IncomingMessage, res: ServerResponse, u
   }
   if (pathName === '/v1/messages' && method === 'POST') {
     await handleAnthropicMessages(req, res, url)
+    return true
+  }
+  if (pathName === '/v1/messages/count_tokens' && method === 'POST') {
+    const config = await gatewayConfig()
+    if (!keyOk(req, config.virtualKey, url)) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid virtual key' } }))
+      return true
+    }
+    const reqChunks: Buffer[] = []
+    for await (const chunk of req) reqChunks.push(chunk as Buffer)
+    try {
+      const body = JSON.parse(Buffer.concat(reqChunks).toString('utf8')) as AnthropicBody
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ input_tokens: estimateAnthropicInputTokens(body) }))
+    } catch {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'invalid JSON body' } }))
+    }
     return true
   }
   if (pathName === '/v1/models' && method === 'GET') {

@@ -4,10 +4,18 @@
 
 ## [未发布]
 
+### 新增
+
+- `/v1/messages/count_tokens` 端点：本地估算 input tokens（CJK≈1 token/字、拉丁≈1/4 字符，含 tools 定义），不花积分，供 Agent 做上下文管理
+- 客户端断开即中止上游请求（2026-10-13 实测中断不扣费），用量台账如实记 `client_aborted`
+
 ### 修复
 
 - **打包版 exe 后台循环（签到/旅行/保活）全部失效**：循环注册原在开发入口 `main.ts`，打包链路（Electron `main.cjs` → `backend.cjs`）从未执行；现移入 `startServer` 统一注册，dev/exe/无头入口共享，启动日志「后台循环已注册」可供核对
 - **`/v1/messages` 伪流式改真流式**：原先无论是否请求流式都收完上游 SSE 再一次性返回 JSON，Agent 长回合零输出直至客户端读超时；现按 Anthropic SSE 事件协议逐条下发（`message_start`/`content_block_delta`/`input_json_delta`/`message_delta`/`message_stop`），翻译状态机含单测（11 项）
+- **Anthropic 图片块被静默丢弃**（Agent 发截图、模型根本没看到图）：现映射为 OpenAI `image_url` 转发上游；`tool_result` 内图片拆分为紧随其后的 user 消息（OpenAI tool 消息只能带文本）
+- 上游错误一律 `api_error` 且不透传 Retry-After：现按状态码映射标准 error.type（429→`rate_limit_error`、模型不存在→`not_found_error`、401→`authentication_error`、529→`overloaded_error` 等），Agent 的差异化退避重试可正确工作
+- `tool_choice:{type:'none'}` 静默变 auto（导致乱调用工具）；`stop_sequences` 被丢弃：现正确映射为 OpenAI `none` / `stop`
 - 网关折叠面板 details summary 双箭头（原生 marker 与自定义箭头叠加）
 
 ## [0.2.0] - 2026-10-10

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { anthropicMessageStart, createAnthropicStreamTranslator } from './gateway.ts'
-import type { UpstreamChunk } from './gateway.ts'
+import {
+  anthropicMessageStart,
+  anthropicToOpenAi,
+  createAnthropicStreamTranslator,
+  estimateAnthropicInputTokens,
+  mapUpstreamError,
+} from './gateway.ts'
+import type { AnthropicBody, UpstreamChunk } from './gateway.ts'
 
 function chunk(partial: Partial<UpstreamChunk>): UpstreamChunk {
   return partial as UpstreamChunk
@@ -120,5 +126,101 @@ describe('anthropic stream translator', () => {
     const t = createAnthropicStreamTranslator(false)
     const tail = t.finish(true)
     expect(types(tail)).toEqual(['message_delta', 'message_stop'])
+  })
+})
+
+describe('anthropicToOpenAi image & params mapping', () => {
+  it('user image block maps to image_url data URL instead of being dropped', () => {
+    const body = {
+      model: 'hy4-preview',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: '这是什么？' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+        ],
+      }],
+    } as unknown as AnthropicBody
+    const out = anthropicToOpenAi(body)
+    expect(out.messages).toContainEqual({
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }],
+    })
+  })
+
+  it('tool_result images split into a following user message, text stays in tool message', () => {
+    const body = {
+      model: 'hy3',
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 't1',
+          content: [
+            { type: 'text', text: '截图如下' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BB' } },
+          ],
+        }],
+      }],
+    } as unknown as AnthropicBody
+    const out = anthropicToOpenAi(body)
+    expect(out.messages).toContainEqual({ role: 'tool', content: '截图如下', tool_call_id: 't1' })
+    expect(out.messages).toContainEqual({
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,BB' } }],
+    })
+  })
+
+  it('tool_choice none maps to none (previously silently became auto)', () => {
+    const body = {
+      model: 'hy3',
+      tool_choice: { type: 'none' },
+      messages: [{ role: 'user', content: 'hi' }],
+    } as unknown as AnthropicBody
+    expect(anthropicToOpenAi(body).tool_choice).toBe('none')
+  })
+
+  it('stop_sequences maps to stop', () => {
+    const body = {
+      model: 'hy3',
+      stop_sequences: ['END', 'STOP'],
+      messages: [{ role: 'user', content: 'hi' }],
+    } as unknown as AnthropicBody
+    expect(anthropicToOpenAi(body).stop).toEqual(['END', 'STOP'])
+  })
+})
+
+describe('mapUpstreamError', () => {
+  it('maps statuses to standard error types', () => {
+    expect(mapUpstreamError(401, 'x').type).toBe('authentication_error')
+    expect(mapUpstreamError(404, 'x').type).toBe('not_found_error')
+    expect(mapUpstreamError(429, 'x').type).toBe('rate_limit_error')
+    expect(mapUpstreamError(529, 'x').type).toBe('overloaded_error')
+    expect(mapUpstreamError(502, 'x').type).toBe('api_error')
+    expect(mapUpstreamError(400, 'service info not found').type).toBe('not_found_error')
+    expect(mapUpstreamError(400, 'bad field').type).toBe('invalid_request_error')
+  })
+
+  it('passes retry-after through as seconds', () => {
+    expect(mapUpstreamError(429, 'x', '12').retryAfterSec).toBe(12)
+    expect(mapUpstreamError(429, 'x').retryAfterSec).toBeUndefined()
+    // HTTP-date 等无法解析的值不透传
+    expect(mapUpstreamError(429, 'x', 'Wed, 21 Oct 2026 07:28:00 GMT').retryAfterSec).toBeUndefined()
+  })
+})
+
+describe('estimateAnthropicInputTokens', () => {
+  it('counts CJK roughly 1 token per char', () => {
+    const body = { model: 'hy3', messages: [{ role: 'user', content: '你好世界再见世界' }] } as unknown as AnthropicBody
+    expect(estimateAnthropicInputTokens(body)).toBe(8)
+  })
+
+  it('counts latin roughly 1 token per 4 chars and includes system', () => {
+    const body = {
+      model: 'hy3',
+      system: 'abcdefgh', // 8 latin → 2
+      messages: [{ role: 'user', content: 'ijklmnop' }], // 8 latin → 2
+    } as unknown as AnthropicBody
+    expect(estimateAnthropicInputTokens(body)).toBe(4)
   })
 })
