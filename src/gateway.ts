@@ -372,7 +372,7 @@ function sanitizeBody(body: Record<string, unknown>, rewrites: SignatureRewrite[
   return { ...body, messages: cleaned }
 }
 
-interface UpstreamChunk {
+export interface UpstreamChunk {
   choices?: {
     delta?: {
       content?: string
@@ -671,6 +671,150 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
 
 // ------------------------------------------- anthropic ↔ openai messages
 
+/**
+ * 上游 OpenAI delta → Anthropic SSE 事件的流式翻译状态机（真流式）。
+ * 块序号按出现顺序递增；tool_use 首个 delta 常缺 id/name，攒齐才开块并
+ * 把已攒的 arguments 一次性补发。空响应防护沿用：收尾时若无任何正文/
+ * 工具块，注入思考回填文本，客户端永不空响应。
+ */
+export interface AnthropicStreamEvent {
+  type: string
+  [key: string]: unknown
+}
+
+export function createAnthropicStreamTranslator(suppressReasoning: boolean): {
+  push: (chunk: UpstreamChunk) => AnthropicStreamEvent[]
+  finish: (truncated?: boolean) => AnthropicStreamEvent[]
+  getUsage: () => UpstreamChunk['usage'] | undefined
+} {
+  const events: AnthropicStreamEvent[] = []
+  let nextIndex = 0
+  let openIndex = -1
+  let openType: 'text' | 'thinking' | 'tool_use' | null = null
+  let textChars = 0
+  let toolBlocks = 0
+  let accumulatedThinking = ''
+  let emittedThinkingBlock = false
+  let stopReason = 'end_turn'
+  let usage: UpstreamChunk['usage'] | undefined
+  const toolState = new Map<number, { blockIndex: number; id: string; name: string; buffered: string; opened: boolean }>()
+
+  const close = (): void => {
+    if (openType) {
+      events.push({ type: 'content_block_stop', index: openIndex })
+      openType = null
+    }
+  }
+  const open = (type: 'text' | 'thinking' | 'tool_use', block: Record<string, unknown>): number => {
+    close()
+    openIndex = nextIndex++
+    openType = type
+    events.push({ type: 'content_block_start', index: openIndex, content_block: block })
+    return openIndex
+  }
+
+  return {
+    push(chunk: UpstreamChunk): AnthropicStreamEvent[] {
+      events.length = 0
+      if (chunk.usage) usage = chunk.usage
+      const choice = chunk.choices?.[0]
+      if (choice?.finish_reason) {
+        stopReason = choice.finish_reason === 'tool_calls' ? 'tool_use' : choice.finish_reason === 'length' ? 'max_tokens' : 'end_turn'
+      }
+      const delta = choice?.delta
+      if (delta?.reasoning_content) {
+        accumulatedThinking += delta.reasoning_content
+        if (!suppressReasoning) {
+          if (openType !== 'thinking') {
+            open('thinking', { type: 'thinking', thinking: '' })
+            emittedThinkingBlock = true
+          }
+          events.push({ type: 'content_block_delta', index: openIndex, delta: { type: 'thinking_delta', thinking: delta.reasoning_content } })
+        }
+      }
+      if (delta?.content) {
+        textChars += delta.content.length
+        if (openType !== 'text') open('text', { type: 'text', text: '' })
+        events.push({ type: 'content_block_delta', index: openIndex, delta: { type: 'text_delta', text: delta.content } })
+      }
+      for (const call of delta?.tool_calls ?? []) {
+        const idx = call.index ?? 0
+        let state = toolState.get(idx)
+        if (!state) {
+          state = { blockIndex: -1, id: call.id ?? '', name: call.function?.name ?? '', buffered: '', opened: false }
+          toolState.set(idx, state)
+        }
+        if (call.id) state.id = call.id
+        if (call.function?.name) state.name = call.function.name
+        if (!state.opened && state.id && state.name) {
+          state.blockIndex = open('tool_use', { type: 'tool_use', id: state.id, name: state.name, input: {} })
+          state.opened = true
+          toolBlocks += 1
+          // 开块前积压的参数（name 未到时先攒着）随开块立即补发
+          if (state.buffered) {
+            events.push({ type: 'content_block_delta', index: state.blockIndex, delta: { type: 'input_json_delta', partial_json: state.buffered } })
+            state.buffered = ''
+          }
+        }
+        if (call.function?.arguments) {
+          if (state.opened) {
+            events.push({ type: 'content_block_delta', index: state.blockIndex, delta: { type: 'input_json_delta', partial_json: call.function.arguments } })
+          } else {
+            state.buffered += call.function.arguments
+          }
+        }
+      }
+      return events.splice(0, events.length)
+    },
+    finish(truncated = false): AnthropicStreamEvent[] {
+      events.length = 0
+      for (const state of [...toolState.values()].sort((a, b) => a.blockIndex - b.blockIndex)) {
+        if (!state.opened && state.id && state.name) {
+          state.blockIndex = open('tool_use', { type: 'tool_use', id: state.id, name: state.name, input: {} })
+          state.opened = true
+          toolBlocks += 1
+          if (state.buffered) {
+            events.push({ type: 'content_block_delta', index: state.blockIndex, delta: { type: 'input_json_delta', partial_json: state.buffered } })
+          }
+        }
+      }
+      if (textChars === 0 && toolBlocks === 0 && !emittedThinkingBlock && !truncated) {
+        // 与非流式路径同语义：正文完全为空时至少给一个 text 块，思考占满预算
+        // 而思考被抑制时回填 banner，客户端永不空响应（思考已下发则不再重复）
+        open('text', { type: 'text', text: '' })
+        if (accumulatedThinking !== '') {
+          events.push({ type: 'content_block_delta', index: openIndex, delta: { type: 'text_delta', text: `〔模型思考过程，未产出最终回答〕${accumulatedThinking}` } })
+        }
+      }
+      close()
+      events.push({
+        type: 'message_delta',
+        delta: { stop_reason: stopReason, stop_sequence: null },
+        usage: { input_tokens: usage?.prompt_tokens ?? 0, output_tokens: usage?.completion_tokens ?? 0 },
+      })
+      events.push({ type: 'message_stop' })
+      return events.splice(0, events.length)
+    },
+    getUsage: () => usage,
+  }
+}
+
+export function anthropicMessageStart(model: string): AnthropicStreamEvent {
+  return {
+    type: 'message_start',
+    message: {
+      id: `msg_${randomUUID()}`,
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }
+}
+
 async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const config = await gatewayConfig()
   const suppressReasoning = config.thinking === 'disabled' // 与 openai 路径同语义：出口侧拦思考内容
@@ -698,6 +842,66 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   const openaiBody = anthropicToOpenAi(anthropic)
   openaiBody['stream'] = true
   const response = await upstreamCall(active.account, openaiBody)
+  const model = String(anthropic.model ?? '')
+  if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
+    const errorText = (await response.text().catch(() => '')) || String(response.status)
+    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200))
+    res.writeHead(response.status, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: errorText.slice(0, 300) } }))
+    return
+  }
+  if (!response.body) {
+    res.writeHead(502, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'upstream returned no body' } }))
+    return
+  }
+
+  if (anthropic.stream === true) {
+    // 真流式：上游 OpenAI delta 逐条翻译为 Anthropic SSE 事件下发
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-wb-account': accountName(active.account),
+    })
+    const emit = (event: AnthropicStreamEvent): void => {
+      if (!res.writableEnded) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    emit(anthropicMessageStart(model))
+    const translator = createAnthropicStreamTranslator(suppressReasoning)
+    const streamReader = response.body.getReader()
+    const streamDecoder = new TextDecoder()
+    let streamBuffered = ''
+    let truncated = false
+    const flushEvent = (event: string): void => {
+      const dataLine = event.split('\n').find((l) => l.startsWith('data:'))
+      if (!dataLine || dataLine.includes('[DONE]')) return
+      try {
+        for (const out of translator.push(JSON.parse(dataLine.slice(5)) as UpstreamChunk)) emit(out)
+      } catch {}
+    }
+    try {
+      for (;;) {
+        const { done, value } = await streamReader.read()
+        if (done) break
+        streamBuffered += streamDecoder.decode(value, { stream: true })
+        let idx: number
+        while ((idx = streamBuffered.indexOf('\n\n')) !== -1) {
+          const event = streamBuffered.slice(0, idx + 2)
+          streamBuffered = streamBuffered.slice(idx + 2)
+          flushEvent(event)
+        }
+      }
+    } catch {
+      truncated = true
+    }
+    for (const out of translator.finish(truncated)) emit(out)
+    res.end()
+    // 与 openai 流式路径同语义：即使客户端中途断开也如实入账
+    tallyUsage(active.account, model, translator.getUsage(), true)
+    return
+  }
+
   const upstreamText = await response.text()
   const chunksIn = parseUpstreamSse(upstreamText)
 

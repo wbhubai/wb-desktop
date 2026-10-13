@@ -2,6 +2,14 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
+## [未发布]
+
+### 修复
+
+- **打包版 exe 后台循环（签到/旅行/保活）全部失效**：循环注册原在开发入口 `main.ts`，打包链路（Electron `main.cjs` → `backend.cjs`）从未执行；现移入 `startServer` 统一注册，dev/exe/无头入口共享，启动日志「后台循环已注册」可供核对
+- **`/v1/messages` 伪流式改真流式**：原先无论是否请求流式都收完上游 SSE 再一次性返回 JSON，Agent 长回合零输出直至客户端读超时；现按 Anthropic SSE 事件协议逐条下发（`message_start`/`content_block_delta`/`input_json_delta`/`message_delta`/`message_stop`），翻译状态机含单测（11 项）
+- 网关折叠面板 details summary 双箭头（原生 marker 与自定义箭头叠加）
+
 ## [0.2.0] - 2026-10-10
 
 首个开源版本（以此版本为基线开始独立版本管理）。
