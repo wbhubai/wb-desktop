@@ -936,7 +936,6 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
         if (response.status >= 500) response = sealBody(await attemptDegraded(UPSTREAM_FAILOVER_HOST))
         retryText = response.ok ? '' : await response.text().catch(() => '')
       }
-      console.log('[dbg] after degrade:', { status: response.status, ok: response.ok, locked: response.body?.locked })
       if (!response.ok) {
         // 降级后仍拦：大概率命中了改写表未覆盖的新签名句——把处置指引写进
         // 错误消息（此前把上游 400 原文直接甩给客户端，用户无从下手）
