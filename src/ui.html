@@ -47,6 +47,8 @@
   details summary::before { content:'▸ '; color:var(--dim); }
   details[open] summary::before { content:'▾ '; }
   tr[data-runlog],tr[data-oplog] { cursor:pointer; }
+  .ack-overlay { position:fixed; inset:0; background:rgba(0,0,0,.68); display:none; align-items:center; justify-content:center; z-index:99; }
+  .ack-overlay .card { max-width:540px; width:92%; max-height:80vh; overflow:auto; }
 </style>
 </head>
 <body>
@@ -173,6 +175,24 @@
     </div>
   </section>
 </main>
+<footer class="muted" style="max-width:960px; margin:0 auto 18px; padding:0 20px;">
+  本工具仅供个人自用账号管理（与腾讯官方无关联，自动化操作存在账号风险）；完整声明见项目 README「使用声明（必读）」。
+</footer>
+<div class="ack-overlay" id="ackOverlay">
+  <div class="card">
+    <h3 style="margin-top:0">使用声明（必读）</h3>
+    <ul style="padding-left:18px; font-size:13px;">
+      <li>本工具<b>仅供个人自用账号</b>：账号管理、签到保活、猫猫旅行、本地模型网关。</li>
+      <li><b>禁止</b>批量注册小号、分发额度、提供付费 API / 共享池、二次打包或收费售卖。</li>
+      <li>自动签到 / 旅行 / 成长任务属于对第三方服务的自动化操作，可能违反其服务条款，<b>账号风险自担</b>。</li>
+      <li>本工具与腾讯及官方产品无任何关联；账号 token 明文保存在本机 <code>~/.wb-hub/</code>，请妥善保管。</li>
+      <li>完整声明见项目 README「使用声明（必读）」。</li>
+    </ul>
+    <div class="row" style="justify-content:flex-end">
+      <button class="act" data-act="ack-agree">我已阅读并同意</button>
+    </div>
+  </div>
+</div>
 <script>
 async function api(path, method = 'GET', body) {
   const r = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -605,6 +625,10 @@ document.addEventListener('click', async (ev) => {
       case 'travel-save': await wbAction('旅行配置', '/travel/config', { enabled: document.getElementById('wbTravelEnabled').checked }); break;
       case 'travel-run': await wbAction('派猫', '/travel/run'); break;
       case 'growth-run': await wbAction('成长任务', '/growth/run'); break;
+      case 'ack-agree':
+        await api('/ack', 'POST', {});
+        document.getElementById('ackOverlay').style.display = 'none';
+        break;
       case 'travel-claim': await wbAction('领取', '/travel/claim'); break;
       case 'travel-refresh': await wbTravelRefresh(); break;
       case 'gw-key-copy': await navigator.clipboard.writeText(document.getElementById('gwKey').value); break;
@@ -628,8 +652,16 @@ document.addEventListener('click', async (ev) => {
 
 /* ── 启动 ── */
 document.getElementById('logsAuto').addEventListener('change', (e) => setLogsAuto(e.target.checked));
+async function initDisclaimer() {
+  try {
+    const ack = await api('/ack');
+    if (ack.acknowledged) return;
+    document.getElementById('ackOverlay').style.display = 'flex';
+  } catch {}
+}
 renderOpOutputs();
 switchTab(currentTab());
+initDisclaimer();
 loadWb();
 loadGateway();
 startStatusPolling();

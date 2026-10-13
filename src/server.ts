@@ -126,6 +126,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       await writeConfig('travel-config.json', { enabled: body['enabled'] === true })
       return replyJson(res, 200, { enabled: body['enabled'] === true })
     }
+    if (route === '/ack' && method === 'GET') {
+      return replyJson(res, 200, await readConfig('ui-ack.json', { acknowledged: false }))
+    }
+    if (route === '/ack' && method === 'POST') {
+      await writeConfig('ui-ack.json', { acknowledged: true, acknowledgedAt: Date.now() })
+      return replyJson(res, 200, { acknowledged: true })
+    }
     if (route === '/growth/run' && method === 'POST') {
       return replyJson(res, 200, await growthCycle(true))
     }
