@@ -177,8 +177,8 @@ function identityOf(account: Record<string, unknown>): string {
   return getStr(account, 'uid') ?? getStr(account, 'id') ?? ''
 }
 
-export async function readAuthFile(variant: WbVariant, home = homeDir()): Promise<Record<string, unknown> | undefined> {
-  const file = authFilePath(variant, home)
+export async function readAuthFile(variant: WbVariant, home = homeDir(), os: HostOs = currentHostOs()): Promise<Record<string, unknown> | undefined> {
+  const file = authFilePath(variant, home, os)
   if (!existsSync(file)) return undefined
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'))
@@ -192,8 +192,9 @@ export async function backupAuthFile(
   variant: WbVariant,
   backupDir: string,
   home = homeDir(),
+  os: HostOs = currentHostOs(),
 ): Promise<string | undefined> {
-  const file = authFilePath(variant, home)
+  const file = authFilePath(variant, home, os)
   if (!existsSync(file)) return undefined
   await mkdir(backupDir, { recursive: true })
   const dest = path.join(backupDir, backupFileName(variant, utcIso()))
@@ -217,12 +218,13 @@ async function atomicWrite(file: string, content: string): Promise<void> {
 export async function writeAccountToAuthFile(
   account: WbAccount,
   variant: WbVariant,
-  options: { home?: string; now?: () => number } = {},
+  options: { home?: string; os?: HostOs; now?: () => number } = {},
 ): Promise<string> {
   const home = options.home ?? homeDir()
+  const os = options.os ?? currentHostOs()
   const at = options.now?.() ?? nowMs()
-  const file = authFilePath(variant, home)
-  const existing = (await readAuthFile(variant, home)) ?? {}
+  const file = authFilePath(variant, home, os)
+  const existing = (await readAuthFile(variant, home, os)) ?? {}
   const list = Array.isArray(existing['allAccounts'])
     ? [...(existing['allAccounts'] as Record<string, unknown>[])]
     : Array.isArray(existing['accounts'])
@@ -241,7 +243,7 @@ export async function writeAccountToAuthFile(
   }
   await atomicWrite(file, `${JSON.stringify(session, null, 2)}\n`)
   // post-write verification: accessToken must match by value (string or envelope)
-  const written = await readAuthFile(variant, home)
+  const written = await readAuthFile(variant, home, os)
   const writtenToken = written && isPlainObject(written['auth']) ? written['auth']['accessToken'] : undefined
   if (JSON.stringify(writtenToken) !== JSON.stringify(authObj['accessToken'])) {
     throw new Error('认证文件写后校验失败，未写入目标账号')
