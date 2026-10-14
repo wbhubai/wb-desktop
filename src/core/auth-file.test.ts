@@ -77,7 +77,8 @@ describe('write', () => {
       }),
     )
     const written = await writeAccountToAuthFile(
-      { uid: 'old', nickname: 'new', access_token: 'newtok', refresh_token: { $wbEncrypted: true, envelope: 'e' }, expiresAt: 1791912333558 },
+      // expiresAt 用 now+1h 动态构造：写死绝对时间戳会随时间腐烂（过期后 expiresIn 被钳为 0）
+      { uid: 'old', nickname: 'new', access_token: 'newtok', refresh_token: { $wbEncrypted: true, envelope: 'e' }, expiresAt: Date.now() + 3_600_000 },
       'cn',
       { home },
     )
