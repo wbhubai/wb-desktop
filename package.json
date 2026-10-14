@@ -69,5 +69,13 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "npmRebuild": false
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wbhubai/wb-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wbhubai/wb-desktop/issues"
+  },
+  "homepage": "https://github.com/wbhubai/wb-desktop#readme"
 }

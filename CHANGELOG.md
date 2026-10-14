@@ -2,7 +2,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循语义化版本。
 
-## [未发布]
+## [0.2.0] - 2026-10-14
 
 ### 新增
 
@@ -39,26 +39,6 @@
 - 上游错误一律 `api_error` 且不透传 Retry-After：现按状态码映射标准 error.type（429→`rate_limit_error`、模型不存在→`not_found_error`、401→`authentication_error`、529→`overloaded_error` 等），Agent 的差异化退避重试可正确工作
 - `tool_choice:{type:'none'}` 静默变 auto（导致乱调用工具）；`stop_sequences` 被丢弃：现正确映射为 OpenAI `none` / `stop`
 - 网关折叠面板 details summary 双箭头（原生 marker 与自定义箭头叠加）
-
-## [0.2.0] - 2026-10-10
-
-首个开源版本（以此版本为基线开始独立版本管理）。
-
-### 新增
-
-- 内置模型网关：OpenAI / Anthropic 双协议（流式透传 + tools 双向映射）、虚拟 Key 鉴权、积分计量与官方 App 一致、跨重启用量台账
-- 官方模型目录管理（按 ID 探测可用性、自动更新清单、UI 可编辑）与思考模式开关
-- 上游 11128 通道拦截自动重发（推理前重试，不重复扣费）；请求签名改写管理（增删/重置即时生效）
-- 内网 AI 网关专用监听（默认 9527，仅开放 `/v1/*` 数据面 + 虚拟 Key）
-- 托盘常驻：关窗不退出，后台签到/旅行/保活与网关持续服务；渲染进程随窗口销毁，常驻内存约 170MB
-
-### 修复
-
-- 思考=关闭时，网关出口侧抑制 `reasoning_content`
-- 流式 `/v1/chat/completions` 全部漏记用量（「刷新统计后 token 使用记录不更新」的根因）
-- 用量统计刷新命中 HTTP 缓存（no-store + cache-buster）；用量面板只显示最旧 50 条
-- 思考模型空回复（折叠 + 思考禁用选项）；积分查询透出官方 20017 错误与套餐表
-- 猫猫旅行派发要求原生数字 location_id（字符串被上游 400 拒绝）
 
 ## [0.1.0] - 2026-09-30
 

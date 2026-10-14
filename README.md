@@ -70,7 +70,7 @@ A local account manager & AI model gateway for WorkBuddy / CodeBuddy, shipped as
 ### 方式二：从源码构建
 
 ```bash
-git clone <本仓库>
+git clone https://github.com/wbhubai/wb-desktop.git
 cd wb-desktop
 pnpm install      # 首次
 pnpm run dist     # 产出 release/wb-desktop-portable.exe
