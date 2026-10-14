@@ -9,10 +9,31 @@
   "keywords": [
     "workbuddy",
     "codebuddy",
-    "electron",
+    "tencent-codebuddy",
     "account-manager",
+    "multi-account",
+    "token-keeper",
+    "auto-checkin",
+    "checkin-bot",
+    "daily-checkin",
+    "cat-travel",
+    "buddy-travel",
+    "growth-task",
     "ai-gateway",
-    "windows"
+    "openai-compatible",
+    "anthropic-compatible",
+    "api-proxy",
+    "llm-gateway",
+    "model-gateway",
+    "claude-code",
+    "zcode",
+    "mcp-server",
+    "credits",
+    "points",
+    "electron",
+    "windows",
+    "desktop-app",
+    "portable"
   ],
   "engines": {
     "node": ">=20"

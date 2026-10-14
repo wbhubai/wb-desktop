@@ -1,12 +1,16 @@
 # wb-desktop · WorkBuddy 账号助手
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](../../releases)
-[![Electron](https://img.shields.io/badge/Electron-37-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/wbhubai/wb-desktop/releases)
+[![Electron](https://img.shields.io/badge/Electron-37-47848F?logo=electron&logo=white)](https://www.electronjs.org/)
+[![Release](https://img.shields.io/github/v/release/wbhubai/wb-desktop)](https://github.com/wbhubai/wb-desktop/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/wbhubai/wb-desktop/total)](https://github.com/wbhubai/wb-desktop/releases)
 
 A local account manager & AI model gateway for WorkBuddy / CodeBuddy, shipped as a single portable Windows executable.
 
 **wb-desktop** 是面向 WorkBuddy / CodeBuddy 用户的 Windows 桌面工具：把多账号登录态管理、Token 保活、自动签到和一个本地 AI 模型网关打包进**单个免安装 exe**（Electron，双击即用，无需 Node 环境）。
+
+<sub>`workbuddy` `codebuddy` `account-manager` `multi-account` `auto-checkin` `daily-checkin` `checkin-bot` `cat-travel` `buddy-travel` `growth-task` `token-keeper` `ai-gateway` `openai-compatible` `anthropic-compatible` `api-proxy` `llm-gateway` `model-gateway` `claude-code` `zcode` `mcp-server` `credits` `electron` `portable`</sub>
 
 > ⚠️ **本项目仅限个人自用账号（账号管理 / 签到保活 / 猫猫旅行 / 本地网关接入），不支持同时也禁止批量小号分发额度、付费 API 共享池、二次打包或收费售卖。** 详见下方[使用声明（必读）](#使用声明必读)。
 
