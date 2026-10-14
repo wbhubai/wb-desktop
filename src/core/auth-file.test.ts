@@ -80,7 +80,7 @@ describe('write', () => {
       // expiresAt 用 now+1h 动态构造：写死绝对时间戳会随时间腐烂（过期后 expiresIn 被钳为 0）
       { uid: 'old', nickname: 'new', access_token: 'newtok', refresh_token: { $wbEncrypted: true, envelope: 'e' }, expiresAt: Date.now() + 3_600_000 },
       'cn',
-      { home },
+      { home, os: 'windows' as const },
     )
     expect(written).toBe(target)
     const root = JSON.parse(await readFile(target, 'utf8'))
@@ -114,12 +114,12 @@ describe('backup', () => {
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, '{"auth":{"accessToken":"x"}}')
     const backupDir = path.join(home, 'backups')
-    const backup = await backupAuthFile('ai', backupDir, home)
+    const backup = await backupAuthFile('ai', backupDir, home, 'windows')
     expect(backup).toBeDefined()
     expect(path.basename(backup!)).toBe(`workbuddy-desktop-ai.${path.basename(backup!).split('.')[1]}.info`)
     expect(existsSync(backup!)).toBe(true)
     expect(authFileName('ai')).toBe('workbuddy-desktop-ai.info')
-    const root = await readAuthFile('ai', home)
+    const root = await readAuthFile('ai', home, 'windows')
     expect(root?.['auth']).toEqual({ accessToken: 'x' })
     await rm(home, { recursive: true, force: true })
   })
