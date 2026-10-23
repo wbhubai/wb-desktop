@@ -65,7 +65,9 @@ A local account manager & AI model gateway for WorkBuddy / CodeBuddy, shipped as
 
 ### 方式一：下载便携版（推荐）
 
-从 [Releases](../../releases) 下载 `wb-desktop-portable.exe`，双击即运行；可复制到任何 Windows x64 机器独立使用。
+从 [Releases](https://github.com/wbhubai/wb-desktop/releases/latest) 下载 `wb-desktop-portable.exe`，双击即运行；可复制到任何 Windows x64 机器独立使用。
+
+> ⚠️ **SmartScreen 提示**：exe 未做代码签名，首次下载运行时 Windows 可能弹「已保护你的电脑」——点 **「更多信息」→「仍要运行」** 即可（本机放行后不再弹）。介意的话可自行核对 Release 附带的文件哈希，或从源码自构建。
 
 - 界面分「账号助手 / 网关代理 / 操作日志」三个页签，右上角实时显示网关运行状态（本地端口与局域网开关）
 - 主界面网关地址：`http://127.0.0.1:3081/v1`（虚拟 Key 在「网关代理」页签查看）
