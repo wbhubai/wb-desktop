@@ -1,7 +1,7 @@
 {
   "name": "wb-desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@11.7.0",
   "description": "WorkBuddy/CodeBuddy 账号管理桌面工具（Electron 便携版，内置本地模型网关）",
   "type": "module",
@@ -84,7 +84,7 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "wb-desktop-portable.exe"
+      "artifactName": "wb-desktop-${version}-portable.exe"
     },
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"

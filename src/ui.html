@@ -53,7 +53,7 @@
 </head>
 <body>
 <header>
-  <h1>WorkBuddy 账号助手</h1>
+  <h1>WorkBuddy 账号助手 <span class="muted" id="appVersion" style="font-size:12px; font-weight:400"></span></h1>
   <button class="act" data-act="show-declaration">使用声明</button>
   <div class="status" id="runStatus" title="正在获取运行状态…">
     <span class="dot" id="statusDot"></span><span id="statusText">检测中…</span>
@@ -298,6 +298,7 @@ function switchTab(tab) {
 async function loadStatus() {
   try {
     const s = await api('/status');
+    document.getElementById('appVersion').textContent = s.version ? 'v' + s.version : '';
     const dot = document.getElementById('statusDot');
     const lanOn = Boolean(s.lan);
     dot.classList.toggle('off', !lanOn);

@@ -29,6 +29,7 @@ import { currentAccounts, loadAccounts, readConfig, readList, writeConfig, dataF
 
 // Bundled by esbuild (build.mjs define); in tsx dev mode falls back to reading the file.
 declare const __UI_HTML__: string | undefined
+declare const __APP_VERSION__: string | undefined
 import { activeGatewayAccount, disableZai, gatewayConfig, handleGateway, maskSecret, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, syncModelCatalog, syncZaiModels, usageSummary, type ModelInfo } from './gateway.ts'
 import { startBackgroundLoops } from './loops.ts'
 
@@ -151,6 +152,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       }))
       const active = accounts.find((account) => account.id === config.activeAccountId)
       return replyJson(res, 200, {
+        version: typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev',
         localPort: controlPort,
         lan: lanGatewayPort() > 0 ? { hosts: lanIPv4s(), port: lanGatewayPort() } : null,
         gateway: {

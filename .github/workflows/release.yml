@@ -33,4 +33,4 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/wb-desktop-portable.exe
+          files: release/wb-desktop-*-portable.exe

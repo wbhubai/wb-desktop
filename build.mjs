@@ -5,13 +5,15 @@
  * `electron dist/main.cjs`) launches.
  */
 import { build } from 'esbuild'
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const dist = path.join(root, 'dist')
 mkdirSync(dist, { recursive: true })
+
+const APP_VERSION = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version
 
 await build({
   entryPoints: [path.join(root, 'src/server.ts')],
@@ -22,7 +24,7 @@ await build({
   outfile: path.join(dist, 'backend.cjs'),
   sourcemap: false,
   loader: { '.html': 'text' },
-  define: { __UI_HTML__: JSON.stringify((await import('node:fs')).readFileSync(path.join(root, 'src/ui.html'), 'utf8')) },
+  define: { __UI_HTML__: JSON.stringify((await import('node:fs')).readFileSync(path.join(root, 'src/ui.html'), 'utf8')), __APP_VERSION__: JSON.stringify(APP_VERSION) },
   logLevel: 'info',
 })
 
@@ -41,7 +43,7 @@ for (const [entry, outfile] of [
     outfile: path.join(dist, outfile),
     sourcemap: false,
     loader: { '.html': 'text' },
-    define: { __UI_HTML__: JSON.stringify((await import('node:fs')).readFileSync(path.join(root, 'src/ui.html'), 'utf8')) },
+    define: { __UI_HTML__: JSON.stringify((await import('node:fs')).readFileSync(path.join(root, 'src/ui.html'), 'utf8')), __APP_VERSION__: JSON.stringify(APP_VERSION) },
     logLevel: 'silent',
   })
 }
@@ -58,6 +60,7 @@ writeFileSync(
 const { app, BrowserWindow, Tray, Menu, shell, nativeImage } = require('electron');
 const { startServer } = require('./backend.cjs');
 
+const APP_VERSION = '${APP_VERSION}';
 const port = Number(process.env.WB_PORT || 3081);
 let window = null;
 let tray = null;
@@ -72,7 +75,7 @@ function createWindow() {
   window = new BrowserWindow({
     width: 1180,
     height: 840,
-    title: 'WorkBuddy 账号助手',
+    title: 'WorkBuddy 账号助手 v' + APP_VERSION,
     icon: path.join(__dirname, '..', 'build', 'icon.ico'),
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
@@ -89,7 +92,7 @@ function createWindow() {
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.ico'));
   tray = new Tray(icon);
-  tray.setToolTip('WorkBuddy 账号助手（后台运行中）');
+  tray.setToolTip('WorkBuddy 账号助手 v' + APP_VERSION + '（后台运行中）');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开主界面', click: () => createWindow() },
     { type: 'separator' },
