@@ -84,7 +84,8 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "wb-desktop-${version}-portable.exe"
+      "artifactName": "wb-desktop-${version}-portable.exe",
+      "unpackDirName": "wb-desktop-portable-0.3.0"
     },
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"

@@ -21,10 +21,23 @@ const APP_VERSION = JSON.parse(readFileSync(path.join(root, 'package.json'), 'ut
 const PKG_NAME_WITH_VERSION = `WorkBuddy Account Hub v${APP_VERSION}`
 {
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  let changed = false
   if (pkg.build?.productName !== PKG_NAME_WITH_VERSION) {
     pkg.build.productName = PKG_NAME_WITH_VERSION
-    writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
+    changed = true
     console.log(`productName -> ${PKG_NAME_WITH_VERSION}`)
+  }
+  // portable 解压目录按版本隔离：避免新旧版本共用同一 %TEMP% 解压目录
+  // （跨版本互踩是 NSIS "Error writing temporary file" 的典型成因）
+  const unpackDirName = `wb-desktop-portable-${APP_VERSION}`
+  if (pkg.build?.portable?.unpackDirName !== unpackDirName) {
+    pkg.build.portable = pkg.build.portable ?? {}
+    pkg.build.portable.unpackDirName = unpackDirName
+    changed = true
+    console.log(`portable.unpackDirName -> ${unpackDirName}`)
+  }
+  if (changed) {
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
   }
 }
 
