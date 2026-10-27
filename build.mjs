@@ -27,19 +27,15 @@ const PKG_NAME_WITH_VERSION = `WorkBuddy Account Hub v${APP_VERSION}`
     changed = true
     console.log(`productName -> ${PKG_NAME_WITH_VERSION}`)
   }
-  // portable 解压目录按版本隔离：避免新旧版本共用同一 %TEMP% 解压目录
-  // （跨版本互踩是 NSIS "Error writing temporary file" 的典型成因）
-  const unpackDirName = `wb-desktop-portable-${APP_VERSION}`
-  if (pkg.build?.portable?.unpackDirName !== unpackDirName) {
-    pkg.build.portable = pkg.build.portable ?? {}
-    pkg.build.portable.unpackDirName = unpackDirName
-    changed = true
-    console.log(`portable.unpackDirName -> ${unpackDirName}`)
-  }
-  // 产物文件名的版本号用下划线：electron-builder portable 的解压路径按 exe
-  // 文件名派生，文件名含额外点号（0.3.0）会让解压写失败（实测复现）
+  // portable 解压目录用 electron-builder 默认（KSUID，27 位纯字母数字）。
+  // 不要自定义 unpackDirName：解压路径是 %TEMP%\<unpackDirName>\，自定义值
+  // 含点号且偏长，叠加深层 payload 路径后实测会让 NSIS 报 "Error writing
+  // temporary file"（写 %TEMP% 失败）。默认值按版本天然隔离，无需手动隔离。
+  // 产物文件名的版本号用下划线：避免文件名含额外点号（与解压路径无关，仅
+  // 命名风格统一）。
   const artifactName = `wb-desktop-${APP_VERSION.replace(/\./g, '_')}-portable.exe`
   if (pkg.build?.portable?.artifactName !== artifactName) {
+    pkg.build.portable = pkg.build.portable ?? {}
     pkg.build.portable.artifactName = artifactName
     changed = true
     console.log(`portable.artifactName -> ${artifactName}`)
