@@ -36,6 +36,14 @@ const PKG_NAME_WITH_VERSION = `WorkBuddy Account Hub v${APP_VERSION}`
     changed = true
     console.log(`portable.unpackDirName -> ${unpackDirName}`)
   }
+  // 产物文件名的版本号用下划线：electron-builder portable 的解压路径按 exe
+  // 文件名派生，文件名含额外点号（0.3.0）会让解压写失败（实测复现）
+  const artifactName = `wb-desktop-${APP_VERSION.replace(/\./g, '_')}-portable.exe`
+  if (pkg.build?.portable?.artifactName !== artifactName) {
+    pkg.build.portable.artifactName = artifactName
+    changed = true
+    console.log(`portable.artifactName -> ${artifactName}`)
+  }
   if (changed) {
     writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
   }

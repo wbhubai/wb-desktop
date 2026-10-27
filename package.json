@@ -84,7 +84,7 @@
       "signExecutable": false
     },
     "portable": {
-      "artifactName": "wb-desktop-${version}-portable.exe",
+      "artifactName": "wb-desktop-0_3_0-portable.exe",
       "unpackDirName": "wb-desktop-portable-0.3.0"
     },
     "electronDownload": {
