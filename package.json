@@ -62,7 +62,7 @@
   "author": "wb-hub",
   "build": {
     "appId": "com.wbhub.wbdesktop",
-    "productName": "WorkBuddy Account Hub",
+    "productName": "WorkBuddy Account Hub v0.3.0",
     "directories": {
       "output": "release",
       "buildResources": "build"

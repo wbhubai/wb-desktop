@@ -15,6 +15,19 @@ mkdirSync(dist, { recursive: true })
 
 const APP_VERSION = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version
 
+// 打包程序名（productName/exe 名）带版本号：多版本共存时可区分。
+// 仅在变化时写回 package.json——electron-builder 从 package.json 的 build 字段读配置，
+// 与版本号一起随 bump 提交一次即可。
+const PKG_NAME_WITH_VERSION = `WorkBuddy Account Hub v${APP_VERSION}`
+{
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  if (pkg.build?.productName !== PKG_NAME_WITH_VERSION) {
+    pkg.build.productName = PKG_NAME_WITH_VERSION
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
+    console.log(`productName -> ${PKG_NAME_WITH_VERSION}`)
+  }
+}
+
 await build({
   entryPoints: [path.join(root, 'src/server.ts')],
   bundle: true,
