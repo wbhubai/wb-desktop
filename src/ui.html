@@ -108,41 +108,80 @@
     </div>
   </section>
   <section class="tab-page" id="tab-gateway">
-    <div class="card"><h3>连接与账号</h3>
+    <div class="card"><h3>A · 上游</h3>
+      <details>
+        <summary>A1 · WorkBuddy（积分计费）</summary>
+        <div style="margin-top:8px">
+          <div class="row">
+            <span class="muted">使用账号</span>
+            <select id="gwAccount" style="min-width:200px"></select>
+            <span class="muted">思考</span>
+            <select id="gwThinking">
+              <option value="default">默认</option>
+              <option value="disabled">关闭</option>
+            </select>
+            <button class="act" id="gwSaveAccountBtn" data-act="gw-account-save">保存</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <span class="muted">模型获取</span>
+            <button class="ghost" data-act="gw-models-sync">同步官方目录（免费）</button>
+            <button class="ghost" data-act="gw-models-refresh">探测可用性（约 0.01 积分/个）</button>
+            <span class="muted">来源：官方 /v3/config + 真实调用自动学习 + 手动添加</span>
+          </div>
+          <div id="gwWbModelCatalog" style="margin-top:6px"></div>
+          <div class="row" style="margin-top:6px">
+            <input id="gwModelAdd" style="flex:1" placeholder="手动添加 wb 模型 ID（如 kimi-k3）">
+            <button class="ghost" data-act="gw-model-add">添加</button>
+          </div>
+          <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
+        </div>
+      </details>
+      <details>
+        <summary id="gwZaiSummary">A2 · Zai Coding（智谱 GLM 包月·国产区）</summary>
+        <div style="margin-top:8px">
+          <div class="row">
+            <span class="muted">API Key</span>
+            <input id="gwZaiKey" type="password" style="flex:1" placeholder="sk-…（仅存本机 gateway.json，不写入日志）">
+            <button class="ghost" data-act="gw-zai-key-show">显示</button>
+            <button class="act" data-act="gw-zai-key-save">保存</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button class="ghost" data-act="gw-zai-sync">拉取模型</button>
+            <button class="ghost" data-act="gw-zai-disable">停用并清除 zai 模型</button>
+            <span class="muted wbstate" data-state="gwzai" style="min-height:18px"></span>
+          </div>
+          <div id="gwZaiModels" style="margin-top:6px"></div>
+          <p class="muted" style="margin-top:6px">
+            模型以 <code>zai/</code> 前缀出现在总清单；调用时 model 填 <code>zai/&lt;模型id&gt;</code>，不计 wb 积分、按智谱套餐计。客户端无需改 baseURL 与虚拟 Key。
+          </p>
+        </div>
+      </details>
+    </div>
+
+    <div class="card"><h3>B · 数据面</h3>
       <div class="row">
         <span class="muted">虚拟 Key</span>
         <input id="gwKey" style="flex:1" readonly>
         <button class="ghost" data-act="gw-key-copy">复制</button>
         <button class="ghost" data-act="gw-key-rotate">重置</button>
       </div>
-      <div class="row" style="margin-top:8px">
-        <span class="muted">模型清单</span>
-        <button class="ghost" data-act="gw-models-sync">同步官方目录（免费）</button>
-        <button class="ghost" data-act="gw-models-refresh">探测可用性（约 0.01 积分/个）</button>
-        <span class="muted">来源：官方 /v3/config + 真实调用自动学习 + 手动添加</span>
-      </div>
+      <div class="muted wbstate" data-state="gw" style="margin-top:4px"></div>
       <div id="gwModelCatalog" style="margin-top:6px"></div>
-      <div class="row" style="margin-top:6px">
-        <input id="gwModelAdd" style="flex:1" placeholder="手动添加模型 ID（如 kimi-k3）">
-        <button class="ghost" data-act="gw-model-add">添加</button>
-      </div>
-      <div class="muted wbstate" data-state="gw" style="margin-top:4px; min-height:18px"></div>
       <div class="row" style="margin-top:8px">
-        <span class="muted">使用账号</span>
-        <select id="gwAccount" style="min-width:200px"></select>
-        <span class="muted">思考</span>
-        <select id="gwThinking">
-          <option value="default">默认</option>
-          <option value="disabled">关闭</option>
+        <span class="muted">筛选</span>
+        <select id="gwModelFilter" onchange="renderModelCatalog(window.__modelCatalogFull||[])">
+          <option value="all">全部</option>
+          <option value="wb">wb</option>
+          <option value="zai">zai</option>
         </select>
-        <button class="act" id="gwSaveAccountBtn" data-act="gw-account-save">保存</button>
+        <span class="muted">总清单 = 客户端 GET /v1/models；增删改请在 A 区对应上游操作</span>
       </div>
       <p class="muted" style="margin-top:8px">
-        接入：baseURL <code id="gwBaseHint">http://127.0.0.1:3081/v1</code>（OpenAI 格式 /chat/completions，或 Anthropic 格式 /v1/messages），API Key 填上方虚拟 Key。积分按官方口径从所选账号实时扣除（与 App 内一致）。可用模型以「模型清单」为准（/v1/models）。
+        接入：baseURL <code id="gwBaseHint">http://127.0.0.1:3081/v1</code>（OpenAI 格式 /chat/completions，或 Anthropic 格式 /v1/messages），API Key 填上方虚拟 Key。wb 模型积分按官方口径实时扣除（与 App 内一致）；<b>zai/ 前缀模型由智谱 Key 计费</b>。可用模型以总清单为准（/v1/models）。
       </p>
       <p class="muted" id="gwLanHint" style="margin-top:4px"></p>
       <details>
-        <summary>高级：签名改写（11128 防御）</summary>
+        <summary>高级：签名改写（11128 防御 · 仅作用于 wb 通道）</summary>
         <div class="muted" style="margin-top:6px">命中下表匹配句的提示内容，会被语义等价改写后转发给上游。</div>
         <div class="row" style="margin-top:6px">
           <button class="ghost" data-act="gw-sig-reset">恢复默认</button>
@@ -425,17 +464,23 @@ async function loadGateway() {
   if (!r.activeAccountId && (r.accounts || [])[0]) sel.value = r.accounts[0].id;
   document.getElementById('gwThinking').value = r.thinking || 'default';
   renderModelCatalog(r.modelCatalog || (r.models || []).map(function (id) { return { id: id, source: 'manual' }; }));
+  renderZai(r);
   renderSignatures(r.signatureRewrites || []);
   const usage = r.usage || [];
   const s = r.summary;
   let html = '';
   if (s && s.requests > 0) {
+    // 按 provider 分小计：wb 记积分，zai 记次数（套餐计费无积分口径）
+    const byZai = (s.byModel || []).filter(function (m) { return String(m.model).indexOf('zai/') === 0; });
+    const zaiReq = byZai.reduce(function (a, m) { return a + m.requests; }, 0);
+    const zaiTok = byZai.reduce(function (a, m) { return a + m.promptTokens + m.completionTokens; }, 0);
     html += '<div class="row" style="margin-bottom:8px">' +
       '<span class="tag ' + (s.errors > 0 ? 'warn' : 'ok') + '">累计 ' + s.requests + ' 次请求</span>' +
       '<span class="tag ok">成功 ' + s.ok + '</span>' +
       (s.errors > 0 ? '<span class="tag err">失败 ' + s.errors + '</span>' : '') +
-      '<span class="tag">输入 ' + s.promptTokens + ' / 输出 ' + s.completionTokens + ' tokens</span>' +
-      '<span class="tag ' + (s.credit === null ? 'warn' : 'ok') + '">积分扣费 ' + (s.credit === null ? '含未知（失败请求）' : s.credit) + '</span></div>';
+      '<span class="tag">wb 积分扣费 ' + (s.credit === null ? '含未知（失败请求）' : s.credit) + '</span>' +
+      (zaiReq > 0 ? '<span class="tag">zai ' + zaiReq + ' 次 · ' + zaiTok + ' tokens</span>' : '') +
+      '<span class="tag">输入 ' + s.promptTokens + ' / 输出 ' + s.completionTokens + ' tokens</span></div>';
     html += '<table><tr><th>模型</th><th>请求</th><th>tokens(入+出)</th><th>积分</th></tr>' +
       s.byModel.map(m => '<tr><td>' + esc(m.model) + '</td><td>' + m.requests + '</td><td>' + m.promptTokens + ' + ' + m.completionTokens + '</td><td>' + (m.credit === null ? '—' : m.credit) + '</td></tr>').join('') + '</table>';
   }
@@ -457,6 +502,53 @@ async function gwSaveAccount() {
   loadGateway();
   setTimeout(() => { btn.textContent = '保存'; }, 1500);
 }
+function renderZai(r) {
+  const keyInput = document.getElementById('gwZaiKey');
+  keyInput.value = '';
+  keyInput.placeholder = r.hasZaiKey ? ('已保存 ' + (r.zaiApiKeyMasked || '') + '（输入新值可更换）') : 'sk-…（仅存本机 gateway.json，不写入日志）';
+  const zaiModels = (r.modelCatalog || []).filter(function (m) { return String(m.id).indexOf('zai/') === 0; });
+  document.getElementById('gwZaiSummary').innerHTML = 'A2 · Zai Coding（智谱 GLM 包月·国产区）&nbsp;' +
+    (r.hasZaiKey ? '<span class="tag ok">已启用 · ' + zaiModels.length + ' 个模型</span>' : '<span class="tag">未配置</span>');
+  const el = document.getElementById('gwZaiModels');
+  el.innerHTML = zaiModels.length
+    ? '<table><tr><th>id</th><th>名称</th><th>上下文</th></tr>' + zaiModels.map(function (m) {
+        return '<tr><td class="mono"><b>' + esc(m.id) + '</b></td><td>' + esc(m.name || '') + '</td><td>' + (m.contextWindow ? (m.contextWindow / 1000).toFixed(0) + 'K' : '—') + '</td></tr>';
+      }).join('') + '</table>'
+    : '<div class="muted">尚无 zai 模型——保存 Key 后点「拉取模型」</div>';
+}
+async function gwZaiKeySave(btn) {
+  const input = document.getElementById('gwZaiKey');
+  const key = (input.value || '').trim();
+  if (!key && !confirm('空 Key 将清除已保存的 Zai Key，确认？')) return;
+  btn.textContent = '保存中…';
+  try {
+    await api('/gateway/config', 'POST', { zaiApiKey: key });
+    btn.textContent = '已保存 ✓';
+  } catch (e) { btn.textContent = '保存失败'; }
+  input.value = '';
+  loadGateway();
+  setTimeout(function () { btn.textContent = '保存'; }, 1500);
+}
+async function gwZaiSync(btn) {
+  btn.textContent = '拉取中…';
+  wbState('zai 模型拉取：GET {zaiBaseUrl}/models（免费）…', 'gwzai');
+  try {
+    const r = await api('/gateway/zai/models/sync', 'POST', {});
+    if (r.error) { wbState('zai 拉取失败：' + r.error, 'gwzai'); btn.textContent = '拉取失败'; }
+    else { wbState('zai 拉取：完成，' + r.count + ' 个模型已并入总清单', 'gwzai'); btn.textContent = '已拉取 ✓'; loadGateway(); }
+  } catch (e) { wbState('zai 拉取：失败', 'gwzai'); btn.textContent = '拉取失败'; }
+  setTimeout(function () { btn.textContent = '拉取模型'; }, 1500);
+}
+async function gwZaiDisable(btn) {
+  if (!confirm('停用将清除 Zai API Key 并从总清单移除全部 zai/ 模型，确认？')) return;
+  btn.textContent = '停用中…';
+  try {
+    await api('/gateway/zai/disable', 'POST', {});
+    wbState('已停用：Key 已清除，zai 模型已移除', 'gwzai');
+    loadGateway();
+  } catch (e) { wbState('停用失败', 'gwzai'); }
+  setTimeout(function () { btn.textContent = '停用并清除 zai 模型'; }, 1500);
+}
 function renderModelCatalog(catalog) {
   const el = document.getElementById('gwModelCatalog');
   if (!(catalog || []).length) {
@@ -465,15 +557,40 @@ function renderModelCatalog(catalog) {
   }
   const COLLAPSED = 5;
   window.__modelCatalogFull = catalog;
-  const visible = window.__modelCatalogExpanded ? catalog : catalog.slice(0, COLLAPSED);
+  const filter = (document.getElementById('gwModelFilter') || {}).value || 'all';
+  const filtered = filter === 'all' ? catalog : catalog.filter(function (m) {
+    const isZai = String(m.id).indexOf('zai/') === 0;
+    return filter === 'zai' ? isZai : !isZai;
+  });
+  const visible = window.__modelCatalogExpanded ? filtered : filtered.slice(0, COLLAPSED);
   const rows = visible.map(function (m) { return modelCatalogRow(m); }).join('');
-  const toggle = catalog.length > COLLAPSED
-    ? '<div class="row" style="margin-top:4px"><button class="ghost" data-act="gw-models-toggle">' + (window.__modelCatalogExpanded ? '收起（共 ' + catalog.length + ' 个）' : '展开全部（共 ' + catalog.length + ' 个）') + '</button></div>'
+  const toggle = filtered.length > COLLAPSED
+    ? '<div class="row" style="margin-top:4px"><button class="ghost" data-act="gw-models-toggle">' + (window.__modelCatalogExpanded ? '收起（共 ' + filtered.length + ' 个）' : '展开全部（共 ' + filtered.length + ' 个）') + '</button></div>'
     : '';
-  el.innerHTML = '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows + '</table>' + toggle;
+  el.innerHTML = '<table><tr><th>ID</th><th>来源</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源类型</th><th>最近调用成功</th></tr>' + rows + '</table>' + toggle
+    + (filtered.length === 0 ? '<div class="muted" style="margin-top:4px">该筛选下暂无模型</div>' : '');
+  renderWbCatalog(catalog.filter(function (m) { return String(m.id).indexOf('zai/') !== 0; }));
+}
+/* A1 子列表：wb 模型管理视图（保留手动条目的移除操作），与 B2 总清单独立 */
+function renderWbCatalog(wbCatalog) {
+  const el = document.getElementById('gwWbModelCatalog');
+  if (!el) return;
+  const COLLAPSED = 5;
+  const visible = window.__modelCatalogExpanded ? wbCatalog : wbCatalog.slice(0, COLLAPSED);
+  const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
+  el.innerHTML = wbCatalog.length
+    ? '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>来源</th><th></th></tr>' + visible.map(function (m) {
+        return '<tr><td class="mono"><b>' + esc(m.id) + '</b></td><td>' + esc(m.name || '') + '</td><td>' +
+          esc([m.multiplier !== undefined && m.multiplier !== null ? m.multiplier + 'x' : '', m.images ? '图' : '', m.toolCall ? '工具' : ''].filter(Boolean).join(' · ')) +
+          '</td><td>' + esc(sourceLabel[m.source] || m.source || '') + '</td><td>' +
+          (m.source === 'manual' ? '<button class="ghost" data-act="gw-model-del" data-id="' + esc(m.id) + '">移除</button>' : '') + '</td></tr>';
+      }).join('') + '</table>' + (wbCatalog.length > COLLAPSED ? '<div class="muted" style="margin-top:4px">其余 ' + (wbCatalog.length - COLLAPSED) + ' 个见 B 区总清单（展开全部）</div>' : '')
+    : '<div class="muted">wb 清单为空——点「同步官方目录」拉取</div>';
 }
 function modelCatalogRow(m) {
   const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
+  const isZai = String(m.id).indexOf('zai/') === 0;
+  const providerBadge = isZai ? '<span class="tag ok">zai</span>' : '<span class="tag">wb</span>';
   const ctxText = m.contextWindow
     ? (m.contextWindow / 1000).toFixed(0) + 'K' + (m.maxOutputTokens ? ' / ' + (m.maxOutputTokens / 1000).toFixed(0) + 'K' : '')
     : '—';
@@ -483,13 +600,13 @@ function modelCatalogRow(m) {
   if (m.toolCall) meta.push('工具');
   return '<tr>' +
     '<td><b>' + esc(m.id) + '</b></td>' +
+    '<td>' + providerBadge + '</td>' +
     '<td>' + esc(m.name || '') + '</td>' +
     '<td>' + esc(meta.join(' · ')) + '</td>' +
     '<td>' + esc(ctxText) + '</td>' +
     '<td>' + esc((m.tags || []).join('，')) + '</td>' +
     '<td>' + esc(sourceLabel[m.source] || m.source || '') + '</td>' +
     '<td>' + (m.lastSeenAt ? new Date(m.lastSeenAt).toLocaleString() : '—') + '</td>' +
-    '<td><button class="ghost" data-act="gw-model-del" data-id="' + esc(m.id) + '">移除</button></td>' +
     '</tr>';
 }
 function gwModelsToggle(btn) {
@@ -654,6 +771,10 @@ document.addEventListener('click', async (ev) => {
       case 'gw-model-add': await gwModelAdd(btn); break;
       case 'gw-model-del': await gwModelDel(btn); break;
       case 'gw-models-refresh': await gwRefreshModels(btn); break;
+      case 'gw-zai-key-save': await gwZaiKeySave(btn); break;
+      case 'gw-zai-key-show': { const k = document.getElementById('gwZaiKey'); k.type = k.type === 'password' ? 'text' : 'password'; break; }
+      case 'gw-zai-sync': await gwZaiSync(btn); break;
+      case 'gw-zai-disable': await gwZaiDisable(btn); break;
       case 'gw-account-save': await gwSaveAccount(); break;
       case 'gw-sig-add': await gwAddSignature(btn); break;
       case 'gw-sig-del': await gwDeleteSignature(Number(btn.dataset.id)); break;

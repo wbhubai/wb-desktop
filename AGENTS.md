@@ -79,6 +79,7 @@ wb-desktop 在本机维护多个 WorkBuddy/CodeBuddy 账号（登录态、Token 
 ## 数据面：把 wb-desktop 当模型端点
 
 - `baseURL = http://127.0.0.1:3081/v1`，鉴权用虚拟 Key（`Authorization: Bearer <key>` / `x-api-key` / `?key=`），Key 在 UI「网关代理」页或 `GET /api/gateway/config` 查看。
+- 模型 id：wb 积分模型用小写短名（`glm-5.3-flash`、`hy3`、`kimi-k3-1`…）；配置了 Zai Coding Key 后 `zai/` 前缀模型走智谱套餐计费（不计 wb 积分）
 - 端点：`POST /v1/chat/completions`（OpenAI 格式，流式透传）、`POST /v1/messages`（Anthropic 格式，**真流式** SSE）、`POST /v1/messages/count_tokens`（本地估算）、`GET /v1/models`。
 - 支持流式、tools 双向映射、图片（Anthropic image → 上游，模型不支持时会明确回复/报错）、标准错误语义（`error.type` + `Retry-After`）、思考模式全局开关（`thinking:'disabled'` 时网关侧抑制思考内容下发）。
 - 计费与官方 App 一致（服务端按积分扣）；客户端断开会中止上游（中断不扣费，台账记 `client_aborted`）。

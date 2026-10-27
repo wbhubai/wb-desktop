@@ -29,7 +29,7 @@ import { currentAccounts, loadAccounts, readConfig, readList, writeConfig, dataF
 
 // Bundled by esbuild (build.mjs define); in tsx dev mode falls back to reading the file.
 declare const __UI_HTML__: string | undefined
-import { activeGatewayAccount, gatewayConfig, handleGateway, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, syncModelCatalog, usageSummary, type ModelInfo } from './gateway.ts'
+import { activeGatewayAccount, disableZai, gatewayConfig, handleGateway, maskSecret, probeModel, recentUsage, refreshRemoteRules, saveGatewayConfig, syncModelCatalog, syncZaiModels, usageSummary, type ModelInfo } from './gateway.ts'
 import { startBackgroundLoops } from './loops.ts'
 
 const startedAt = Date.now()
@@ -168,6 +168,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       await loadAccounts()
       return replyJson(res, 200, {
         ...config,
+        // 完整 Key 永不下发控制面：只给脱敏回显与存在标志
+        zaiApiKey: undefined,
+        zaiApiKeyMasked: maskSecret(config.zaiApiKey),
+        hasZaiKey: Boolean(config.zaiApiKey),
         lan: lanGatewayPort() > 0 ? { hosts: lanIPv4s(), port: lanGatewayPort() } : null,
         usage: recentUsage().slice(0, 100),
         summary: usageSummary(),
@@ -188,9 +192,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         patch['modelCatalog'] = (body['models'] as unknown[])
           .map((id) => String(id).trim())
           .filter((id: string) => id !== '')
-          .map((id: string) => meta.get(id) ?? ({ id, source: 'manual' } satisfies ModelInfo))
+          .map((id: string) => meta.get(id) ?? ({ id, source: 'manual', provider: id.startsWith('zai/') ? 'zai' : 'wb' } satisfies ModelInfo))
       }
       if (body['thinking'] === 'default' || body['thinking'] === 'disabled') patch['thinking'] = body['thinking']
+      // zai Key：字符串即保存（trim 非空才落盘），null/空串即清除；不回显
+      if (typeof body['zaiApiKey'] === 'string' || body['zaiApiKey'] === null) {
+        const key = typeof body['zaiApiKey'] === 'string' ? body['zaiApiKey'].trim() : ''
+        patch['zaiApiKey'] = key === '' ? undefined : key
+      }
+      if (typeof body['zaiBaseUrl'] === 'string') patch['zaiBaseUrl'] = body['zaiBaseUrl'].trim()
       if (typeof body['rulesUrl'] === 'string') patch['rulesUrl'] = body['rulesUrl'].trim()
       if (Array.isArray(body['signatureRewrites'])) {
         const rewrites = body['signatureRewrites']
@@ -199,7 +209,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
           .filter((r: { match: string }) => r.match !== '')
         patch['signatureRewrites'] = rewrites
       }
-      return replyJson(res, 200, await saveGatewayConfig(patch))
+      const saved = await saveGatewayConfig(patch)
+      const { zaiApiKey: _secret, ...safeConfig } = saved
+      return replyJson(res, 200, { ...safeConfig, zaiApiKeyMasked: maskSecret(saved.zaiApiKey), hasZaiKey: Boolean(saved.zaiApiKey) })
     }
     if (route === '/gateway/rules/refresh' && method === 'POST') {
       return replyJson(res, 200, await refreshRemoteRules())
@@ -207,6 +219,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (route === '/gateway/models/sync' && method === 'POST') {
       const result = await syncModelCatalog()
       return replyJson(res, result.error !== undefined ? 503 : 200, result)
+    }
+    if (route === '/gateway/zai/models/sync' && method === 'POST') {
+      const result = await syncZaiModels()
+      return replyJson(res, result.error !== undefined ? 503 : 200, result)
+    }
+    if (route === '/gateway/zai/disable' && method === 'POST') {
+      return replyJson(res, 200, await disableZai())
     }
     if (route === '/gateway/models/refresh' && method === 'POST') {
       const active = await activeGatewayAccount()
@@ -228,7 +247,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       return replyJson(res, 200, { models: kept.map((entry) => entry.id), report })
     }
     if (route === '/gateway/key/rotate' && method === 'POST') {
-      return replyJson(res, 200, await saveGatewayConfig({ virtualKey: `wb-${crypto.randomUUID().replace(/-/g, '')}` }))
+      const saved = await saveGatewayConfig({ virtualKey: `wb-${crypto.randomUUID().replace(/-/g, '')}` })
+      const { zaiApiKey: _secret, ...safeConfig } = saved
+      return replyJson(res, 200, { ...safeConfig, zaiApiKeyMasked: maskSecret(saved.zaiApiKey), hasZaiKey: Boolean(saved.zaiApiKey) })
     }
     if (route === '/logs' && method === 'GET') {
       return replyJson(res, 200, { logs: recentLogs() })

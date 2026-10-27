@@ -24,6 +24,14 @@ const UPSTREAM_FAILOVER_HOST = 'https://wb.tencentbuddy.com'
 const UPSTREAM_PATH = '/v2/chat/completions'
 const REFRESH_COOLDOWN_MS = 5_000
 
+/**
+ * Zai Coding（智谱 GLM 包月·国产区）第二上游。端点形态按公开文档实现
+ * （OpenAI 兼容 chat/completions + models），未在本机实测（开发网络无法
+ * 直连该域名）——base URL 可配置兜底，路径有出入时无需改代码。
+ */
+export const ZAI_DEFAULT_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
+export const ZAI_MODEL_PREFIX = 'zai/'
+
 /** 离线兜底目录：仅在 /v3/config 拉取失败且本地无缓存时使用。线上清单以远程为准。 */
 export const OFFICIAL_MODEL_CATALOG = [
   'hy4-preview',
@@ -51,8 +59,10 @@ export interface ModelInfo {
   description?: string
   /** 官方标签（限时免费/夜间折扣/订阅优先等，来自 discounts 徽章） */
   tags?: string[]
-  /** 来源：remote=官方目录（/v3/config ∪ 企业端点），builtin=离线兜底，manual=手动添加，learned=真实调用成功 */
+  /** 来源：remote=官方目录（/v3/config ∪ 企业端点 ∪ zai models），builtin=离线兜底，manual=手动添加，learned=真实调用成功 */
   source: 'remote' | 'builtin' | 'manual' | 'learned'
+  /** 上游归属：wb=WorkBuddy 积分（缺省），zai=智谱 Coding 套餐（id 带 zai/ 前缀） */
+  provider?: 'wb' | 'zai'
   /** 最近一次真实调用成功时间（台账学习） */
   lastSeenAt?: number
 }
@@ -140,6 +150,27 @@ export function learnModelInCatalog(catalog: ModelInfo[], id: string, now: numbe
   return catalog
 }
 
+/** 模型 id → 上游归属：zai/ 前缀即 zai，其余 wb（含脏数据防御）。 */
+export function providerFor(id: string): 'wb' | 'zai' {
+  return id.startsWith(ZAI_MODEL_PREFIX) ? 'zai' : 'wb'
+}
+
+/** 请求分派判定：zai/ 前缀模型走智谱上游。 */
+export function isZaiModel(id: string): boolean {
+  return providerFor(id) === 'zai'
+}
+
+/** zai/ 前缀模型剥前缀后的上游真实模型 id；无前缀原样返回。 */
+export function zaiUpstreamId(model: string): string {
+  return model.startsWith(ZAI_MODEL_PREFIX) ? model.slice(ZAI_MODEL_PREFIX.length) : model
+}
+
+/** 凭据脱敏：仅保留头 4 尾 4，用于 UI 回显与日志（完整 Key 永不出网关模块）。 */
+export function maskSecret(key: string | undefined): string | null {
+  if (!key) return null
+  return key.length > 8 ? `${key.slice(0, 4)}…${key.slice(-4)}` : '…'
+}
+
 /**
  * 探测一个模型 ID 是否可用：max_tokens=1 的微型请求（消耗约 0.01 积分）。
  * available=可立即调用；exists=false 仅在 400 "service info not found"（上游
@@ -208,6 +239,10 @@ export interface GatewayConfig {
   rulesUrl?: string
   /** 存储层：远程规则缓存（由 refreshRemoteRules 写入） */
   remoteSignatureRewrites?: SignatureRewrite[]
+  /** Zai Coding API Key（静态，存 gateway.json；UI 只回显脱敏值） */
+  zaiApiKey?: string
+  /** Zai 上游 base URL（默认国产区 coding 端点，可覆盖） */
+  zaiBaseUrl?: string
 }
 
 export interface SignatureRewrite {
@@ -311,7 +346,7 @@ export function migrateModelCatalog(stored: ModelInfo[] | undefined, legacyModel
   const known = new Set(catalog.map((entry) => entry.id))
   for (const id of Array.isArray(legacyModels) ? legacyModels : []) {
     if (typeof id === 'string' && id !== '' && !known.has(id)) {
-      catalog.push({ id, source: 'manual' })
+      catalog.push({ id, source: 'manual', provider: providerFor(id) })
       known.add(id)
     }
   }
@@ -336,6 +371,8 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
       modelCatalog,
       thinking: config.thinking ?? 'default',
       signatureRewrites: effective,
+      zaiBaseUrl: config.zaiBaseUrl?.trim() ? config.zaiBaseUrl.trim() : ZAI_DEFAULT_BASE_URL,
+      ...(config.zaiApiKey ? { zaiApiKey: config.zaiApiKey } : {}),
       ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
       ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
     }
@@ -347,6 +384,8 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
     modelCatalog,
     thinking: config.thinking ?? 'default',
     signatureRewrites: effective,
+    zaiBaseUrl: config.zaiBaseUrl?.trim() ? config.zaiBaseUrl.trim() : ZAI_DEFAULT_BASE_URL,
+    ...(config.zaiApiKey ? { zaiApiKey: config.zaiApiKey } : {}),
     ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
     ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
   }
@@ -363,6 +402,8 @@ function storedConfigShape(config: GatewayConfig): Record<string, unknown> {
     thinking: config.thinking ?? 'default',
     customSignatureRewrites: deriveCustomRewrites(config.signatureRewrites),
     remoteSignatureRewrites: Array.isArray(config.remoteSignatureRewrites) ? config.remoteSignatureRewrites : [],
+    ...(config.zaiApiKey ? { zaiApiKey: config.zaiApiKey } : {}),
+    ...(config.zaiBaseUrl?.trim() && config.zaiBaseUrl.trim() !== ZAI_DEFAULT_BASE_URL ? { zaiBaseUrl: config.zaiBaseUrl.trim() } : {}),
     ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
     ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
   }
@@ -393,10 +434,67 @@ export async function syncModelCatalog(): Promise<{ count: number; error?: strin
     byId.delete(remote.id)
   }
   for (const rest of byId.values()) {
-    if (rest.source !== 'remote') next.push(rest)
+    // zai 条目（source 也是 remote）只归 zai 同步管，wb 同步不清理
+    if (rest.source !== 'remote' || rest.provider === 'zai') next.push(rest)
   }
   await saveGatewayConfig({ modelCatalog: next })
   return { count: next.length }
+}
+
+/**
+ * Zai Coding 模型目录同步：GET {zaiBaseUrl}/models（Bearer 静态 Key，免费）。
+ * 返回 OpenAI models 格式（data[].id）。zai 条目整体替换（保留 lastSeenAt），
+ * wb 条目不动——两个上游的目录互不覆盖。
+ */
+export async function fetchZaiCatalog(config: GatewayConfig): Promise<{ models: ModelInfo[]; error?: string }> {
+  if (!config.zaiApiKey) return { models: [], error: '未配置 Zai API Key' }
+  let response: Response
+  try {
+    response = await fetch(`${config.zaiBaseUrl}/models`, {
+      headers: { authorization: `Bearer ${config.zaiApiKey}` },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    })
+  } catch (error) {
+    return { models: [], error: error instanceof Error ? error.message : String(error) }
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    return { models: [], error: `HTTP ${response.status}: ${text.slice(0, 120)}` }
+  }
+  const data = (await response.json().catch(() => undefined)) as { data?: { id?: unknown; owned_by?: unknown }[] } | undefined
+  const models = Array.isArray(data?.data) ? data!.data! : []
+  const out: ModelInfo[] = []
+  for (const entry of models) {
+    if (typeof entry?.id !== 'string' || entry.id.trim() === '') continue
+    const id = entry.id.trim()
+    // 上游 id 若已带前缀则去重，保证目录 id 恒为 zai/<mid>
+    out.push({ id: ZAI_MODEL_PREFIX + zaiUpstreamId(id), source: 'remote', provider: 'zai' })
+  }
+  return { models: out }
+}
+
+export async function syncZaiModels(): Promise<{ count: number; error?: string }> {
+  const config = await gatewayConfig()
+  const result = await fetchZaiCatalog(config)
+  if (result.error !== undefined) return { count: 0, error: result.error }
+  const existing = (config.modelCatalog ?? []).filter((entry) => entry.provider === 'zai')
+  const lastSeen = new Map(existing.map((entry) => [entry.id, entry.lastSeenAt]))
+  const zaiNext = result.models.map((entry) => {
+    const seen = lastSeen.get(entry.id)
+    return seen ? { ...entry, lastSeenAt: seen } : entry
+  })
+  const next = [...(config.modelCatalog ?? []).filter((entry) => entry.provider !== 'zai'), ...zaiNext]
+  await saveGatewayConfig({ modelCatalog: next })
+  return { count: zaiNext.length }
+}
+
+/** 停用 zai：清 Key 并从目录移除全部 zai 条目（wb 条目原样）。 */
+export async function disableZai(): Promise<{ removed: number }> {
+  const config = await gatewayConfig()
+  const catalog = config.modelCatalog ?? []
+  const kept = catalog.filter((entry) => entry.provider !== 'zai')
+  await saveGatewayConfig({ zaiApiKey: undefined, modelCatalog: kept })
+  return { removed: catalog.length - kept.length }
 }
 
 // 台账学习落盘防抖：每次成功调用都触发，30s 合并写一次 gateway.json
@@ -410,7 +508,7 @@ function learnModelUsage(model: string): void {
   const apply = (catalog: ModelInfo[]): void => {
     const existing = catalog.find((entry) => entry.id === id)
     if (existing) existing.lastSeenAt = now
-    else catalog.push({ id, source: 'learned', lastSeenAt: now })
+    else catalog.push({ id, source: 'learned', lastSeenAt: now, provider: providerFor(id) })
   }
   if (pendingCatalog) {
     apply(pendingCatalog)
@@ -859,6 +957,37 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
   }
 }
 
+/**
+ * Zai 上游调用：静态 Bearer Key 直通，标准 OpenAI SSE 透传。
+ * 有意不走 wb 链路的特有处置（签名改写/11128 兜底/401 刷新/账号并发槽）——
+ * 那些全部针对 workbuddy 通道风控，对智谱端点既无意义也有害。
+ */
+async function zaiCall(config: GatewayConfig, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  const controller = new AbortController()
+  signal?.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
+  const ttfbTimer = setTimeout(() => controller.abort(new Error('upstream ttfb timeout')), UPSTREAM_TTFB_MS)
+  ttfbTimer.unref?.()
+  try {
+    const response = await fetch(`${config.zaiBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${config.zaiApiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    clearTimeout(ttfbTimer)
+    // 与 wb 路径同一套看门狗/重建 Response 约定（见 upstreamCallInner 注释）
+    if (response.body) {
+      const watched = withIdleWatchdog(response.body, controller)
+      return new Response(watched, { status: response.status, statusText: response.statusText, headers: response.headers })
+    }
+    return response
+  } catch (error) {
+    clearTimeout(ttfbTimer)
+    if (controller.signal.aborted && !signal?.aborted) throw new Error('智谱上游无响应（连接/首包超时 120s）')
+    throw error
+  }
+}
+
 async function upstreamCallInner(account: WbAccount, effective: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   // 内部总控：客户端断开（外部 signal）与内部超时共用一个 controller
   const controller = new AbortController()
@@ -957,11 +1086,11 @@ async function upstreamCallInner(account: WbAccount, effective: Record<string, u
   return response
 }
 
-function tallyUsage(account: WbAccount, model: string, usage: UpstreamChunk['usage'], ok: boolean, error?: string, category?: string): void {
+function tallyUsage(account: string, model: string, usage: UpstreamChunk['usage'], ok: boolean, error?: string, category?: string): void {
   if (ok) learnModelUsage(model)
   recordUsage({
     ts: Date.now(),
-    account: accountName(account),
+    account,
     model,
     promptTokens: usage?.prompt_tokens ?? 0,
     completionTokens: usage?.completion_tokens ?? 0,
@@ -996,12 +1125,6 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     res.end(JSON.stringify({ error: { message: 'invalid virtual key', type: 'authentication_error' } }))
     return
   }
-  const active = await activeGatewayAccount()
-  if (!active.account) {
-    res.writeHead(503, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ error: { message: active.error, type: 'api_error' } }))
-    return
-  }
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(chunk as Buffer)
   let body: Record<string, unknown>
@@ -1012,13 +1135,36 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     res.end(JSON.stringify({ error: { message: 'invalid JSON body', type: 'invalid_request_error' } }))
     return
   }
+  // provider 分派：zai/ 前缀 → 智谱上游（无需 wb 账号），裸 id → wb 积分链路
+  const requestedModel = String(body['model'] ?? '')
+  const zaiRoute = isZaiModel(requestedModel)
+  let active: WbAccount | undefined
+  let acctName: string
+  if (zaiRoute) {
+    if (!config.zaiApiKey) {
+      tallyUsage('zai', requestedModel, undefined, false, '未配置 Zai API Key', 'invalid_request_error')
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'model "zai/*" 需要先在网关代理页配置 Zai Coding API Key', type: 'invalid_request_error' } }))
+      return
+    }
+    acctName = 'zai'
+  } else {
+    const gateway = await activeGatewayAccount()
+    if (!gateway.account) {
+      res.writeHead(503, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: gateway.error, type: 'api_error' } }))
+      return
+    }
+    active = gateway.account
+    acctName = accountName(active)
+  }
   const clientWantsStream = body['stream'] === true
   // Forward a strict whitelist of standard OpenAI fields. ZCode injects extra
   // params (thinking / enable_thinking / reasoning_effort / reasoning /
   // max_completion_tokens) and our own internal flags must never leak — the
   // upstream channel verifier (11128) flags non-standard field combinations.
   const forwarded: Record<string, unknown> = {
-    model: body['model'],
+    model: zaiRoute ? zaiUpstreamId(requestedModel) : body['model'],
     messages: body['messages'],
     stream: true, // upstream rejects non-stream
     ...(Array.isArray(body['tools']) ? { tools: body['tools'] } : {}),
@@ -1033,7 +1179,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
         : {}),
   }
   body = forwarded
-  const model = String(body['model'] ?? '')
+  const model = requestedModel
   // 客户端断开即中止上游（实测中断不扣费，见 2026-10-13 计费实验）
   const controller = new AbortController()
   res.on('close', () => {
@@ -1041,10 +1187,10 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   })
   let response: Response
   try {
-    response = await upstreamCall(active.account, body, controller.signal)
+    response = zaiRoute ? await zaiCall(config, body, controller.signal) : await upstreamCall(active!, body, controller.signal)
   } catch (error) {
     if (controller.signal.aborted) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
+      tallyUsage(acctName, model, undefined, false, 'client_aborted', 'client_aborted')
       return
     }
     throw error
@@ -1052,7 +1198,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
     const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
-    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200), mapped.type)
+    tallyUsage(acctName, model, undefined, false, errorText.slice(0, 200), mapped.type)
     res.writeHead(response.status, {
       'content-type': 'application/json; charset=utf-8',
       ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
@@ -1097,7 +1243,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
       if (choice?.finish_reason) finish = choice.finish_reason
       if (parsed.usage) usage = parsed.usage
     }
-    tallyUsage(active.account, model, usage, true)
+    tallyUsage(acctName, model, usage, true)
     let finalContent: string | null = content
     if (finalContent === '' || finalContent === null) {
       if (reasoning !== '' && toolCalls.size === 0) finalContent = `〔模型思考过程，未产出最终回答〕${reasoning}`
@@ -1110,7 +1256,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     }))
     if (calls.length > 0) message['tool_calls'] = calls
     if (reasoning !== '' && !suppressReasoning) message['reasoning_content'] = reasoning
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': accountName(active.account) })
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': acctName })
     res.end(JSON.stringify({
       id: `chatcmpl-${randomUUID()}`,
       object: 'chat.completion',
@@ -1132,7 +1278,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive',
-    'x-wb-account': accountName(active.account),
+    'x-wb-account': acctName,
   })
   // streaming passthrough with an empty-response guard: deltas forward live;
   // if the model spent the whole budget on reasoning (content stayed empty),
@@ -1202,9 +1348,9 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   // 记账：此前 streamSse 从未累积导致流式调用全部漏记——这是「刷新统计后
   // token 使用记录不更新」的根因。客户端中止（上游 usage 不会到达）如实标记。
   if (controller.signal.aborted && streamUsage === undefined) {
-    tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
+    tallyUsage(acctName, model, undefined, false, 'client_aborted', 'client_aborted')
   } else {
-    tallyUsage(active.account, model, streamUsage, true)
+    tallyUsage(acctName, model, streamUsage, true)
   }
 }
 
@@ -1379,12 +1525,6 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid virtual key' } }))
     return
   }
-  const active = await activeGatewayAccount()
-  if (!active.account) {
-    res.writeHead(503, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: active.error } }))
-    return
-  }
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(chunk as Buffer)
   let anthropic: AnthropicBody
@@ -1395,9 +1535,32 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'invalid JSON body' } }))
     return
   }
+  // provider 分派（与 OpenAI 路径同语义）：zai/ 前缀 → 智谱上游，无需 wb 账号
+  const model = String(anthropic.model ?? '')
+  const zaiRoute = isZaiModel(model)
+  let active: WbAccount | undefined
+  let acctName: string
+  if (zaiRoute) {
+    if (!config.zaiApiKey) {
+      tallyUsage('zai', model, undefined, false, '未配置 Zai API Key', 'invalid_request_error')
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'model "zai/*" 需要先在网关代理页配置 Zai Coding API Key' } }))
+      return
+    }
+    acctName = 'zai'
+  } else {
+    const gateway = await activeGatewayAccount()
+    if (!gateway.account) {
+      res.writeHead(503, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: gateway.error } }))
+      return
+    }
+    active = gateway.account
+    acctName = accountName(active)
+  }
   const openaiBody = anthropicToOpenAi(anthropic)
   openaiBody['stream'] = true
-  const model = String(anthropic.model ?? '')
+  if (zaiRoute) openaiBody['model'] = zaiUpstreamId(model)
   // 客户端断开即中止上游（实测中断不扣费，见 2026-10-13 计费实验）
   const controller = new AbortController()
   res.on('close', () => {
@@ -1405,10 +1568,10 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   })
   let response: Response
   try {
-    response = await upstreamCall(active.account, openaiBody, controller.signal)
+    response = zaiRoute ? await zaiCall(config, openaiBody, controller.signal) : await upstreamCall(active!, openaiBody, controller.signal)
   } catch (error) {
     if (controller.signal.aborted) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
+      tallyUsage(acctName, model, undefined, false, 'client_aborted', 'client_aborted')
       return
     }
     throw error
@@ -1416,7 +1579,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
     const errorText = (await response.text().catch(() => '')) || String(response.status)
     const mapped = mapUpstreamError(response.status, errorText, response.headers.get('retry-after'))
-    tallyUsage(active.account, model, undefined, false, errorText.slice(0, 200), mapped.type)
+    tallyUsage(acctName, model, undefined, false, errorText.slice(0, 200), mapped.type)
     res.writeHead(response.status, {
       'content-type': 'application/json; charset=utf-8',
       ...(mapped.retryAfterSec !== undefined ? { 'retry-after': String(mapped.retryAfterSec) } : {}),
@@ -1436,7 +1599,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
-      'x-wb-account': accountName(active.account),
+      'x-wb-account': acctName,
     })
     const emit = (event: AnthropicStreamEvent): void => {
       if (!res.writableEnded) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
@@ -1473,9 +1636,9 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     res.end()
     // 客户端中止（上游 usage 不会到达）如实标记；正常结束按最终 usage 入账
     if (controller.signal.aborted && translator.getUsage() === undefined) {
-      tallyUsage(active.account, model, undefined, false, 'client_aborted', 'client_aborted')
+      tallyUsage(acctName, model, undefined, false, 'client_aborted', 'client_aborted')
     } else {
-      tallyUsage(active.account, model, translator.getUsage(), true)
+      tallyUsage(acctName, model, translator.getUsage(), true)
     }
     return
   }
@@ -1506,7 +1669,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
     }
     if (parsed.usage) usageField = parsed.usage
   }
-  tallyUsage(active.account, String(anthropic.model), usageField, response.status === 200, response.status !== 200 ? upstreamText.slice(0, 200) : undefined)
+  tallyUsage(acctName, model, usageField, response.status === 200, response.status !== 200 ? upstreamText.slice(0, 200) : undefined)
 
   const content: Record<string, unknown>[] = []
   if (text) content.push({ type: 'text', text })
@@ -1530,7 +1693,7 @@ async function handleAnthropicMessages(req: IncomingMessage, res: ServerResponse
   }
   if (content.length === 0) content.push({ type: 'text', text: '' })
 
-  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': accountName(active.account) })
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'x-wb-account': acctName })
   res.end(
     JSON.stringify({
       id: `msg_${randomUUID()}`,

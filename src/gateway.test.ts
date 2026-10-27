@@ -8,13 +8,17 @@ import {
   deriveCustomRewrites,
   effectiveRewrites,
   estimateAnthropicInputTokens,
+  fetchZaiCatalog,
   learnModelInCatalog,
   mapUpstreamError,
+  maskSecret,
   mergeModelCatalogs,
   migrateModelCatalog,
   parseEnterpriseModels,
   parseModelCatalog,
+  providerFor,
   sanitizeBody,
+  zaiUpstreamId,
 } from './gateway.ts'
 import type { AnthropicBody, ModelInfo, UpstreamChunk } from './gateway.ts'
 
@@ -317,6 +321,57 @@ describe('model catalog', () => {
     learnModelInCatalog(catalog, 'kimi-k3', 300)
     expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({ source: 'learned', lastSeenAt: 300 })
     expect(learnModelInCatalog(catalog, '  ', 400)).toHaveLength(2)
+  })
+})
+
+describe('zai provider routing', () => {
+  it('providerFor/zaiUpstreamId: zai/ 前缀识别与前缀剥离', () => {
+    expect(providerFor('zai/glm-5.3')).toBe('zai')
+    expect(providerFor('glm-5.3')).toBe('wb')
+    expect(providerFor('zai/')).toBe('zai')
+    expect(zaiUpstreamId('zai/glm-5.3')).toBe('glm-5.3')
+    expect(zaiUpstreamId('glm-5.3')).toBe('glm-5.3')
+  })
+
+  it('maskSecret: 头4尾4脱敏，短 Key 全遮，空值 null', () => {
+    expect(maskSecret('sk-1234567890abcdef')).toBe('sk-1…cdef')
+    expect(maskSecret('short')).toBe('…')
+    expect(maskSecret(undefined)).toBeNull()
+    expect(maskSecret('')).toBeNull()
+  })
+
+  it('migrateModelCatalog: 手动 zai 条目带 provider=zai 归属', () => {
+    const catalog = migrateModelCatalog(undefined, ['zai/glm-5.3'])
+    expect(catalog.find((m) => m.id === 'zai/glm-5.3')?.provider).toBe('zai')
+    expect(catalog.find((m) => m.id === 'glm-5.3')?.provider).toBeUndefined()
+  })
+
+  it('fetchZaiCatalog: 未配置 Key 报错；OpenAI models 响应加前缀入目录', async () => {
+    const noKey = await fetchZaiCatalog({ virtualKey: 'k', models: [], zaiBaseUrl: 'https://zai.test/v4' })
+    expect(noKey.error).toContain('未配置')
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: 'glm-5.3' }, { id: 'glm-4.7' }, { id: '' }] }), { status: 200 })) as typeof fetch
+    try {
+      const result = await fetchZaiCatalog({ virtualKey: 'k', models: [], zaiBaseUrl: 'https://zai.test/v4', zaiApiKey: 'sk-test' })
+      expect(result.error).toBeUndefined()
+      expect(result.models.map((m) => m.id)).toEqual(['zai/glm-5.3', 'zai/glm-4.7'])
+      expect(result.models.every((m) => m.provider === 'zai' && m.source === 'remote')).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('fetchZaiCatalog: 上游 401 转为可读错误且不抛异常', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('{"error":"invalid api key"}', { status: 401 })) as typeof fetch
+    try {
+      const result = await fetchZaiCatalog({ virtualKey: 'k', models: [], zaiBaseUrl: 'https://zai.test/v4', zaiApiKey: 'sk-bad' })
+      expect(result.error).toContain('401')
+      expect(result.models).toHaveLength(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 
