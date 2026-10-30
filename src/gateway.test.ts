@@ -18,9 +18,10 @@ import {
   parseModelCatalog,
   providerFor,
   sanitizeBody,
+  summarizeUsage,
   zaiUpstreamId,
 } from './gateway.ts'
-import type { AnthropicBody, ModelInfo, UpstreamChunk } from './gateway.ts'
+import type { AnthropicBody, ModelInfo, UpstreamChunk, UsageEntry } from './gateway.ts'
 
 function chunk(partial: Partial<UpstreamChunk>): UpstreamChunk {
   return partial as UpstreamChunk
@@ -454,5 +455,58 @@ describe('11128 defense layers', () => {
     expect(messages[0]!.content).toContain('helpful assistant')
     expect(messages[1]!.role).toBe('user')
     expect(messages[2]!.role).toBe('assistant')
+  })
+})
+
+describe('usage summary', () => {
+  function at(month: number, day: number, hour: number, minute: number): number {
+    return new Date(2026, month - 1, day, hour, minute, 0, 0).getTime()
+  }
+  const now = at(10, 30, 12, 0)
+  function entry(ts: number, model: string, credit: number | null, ok = true): UsageEntry {
+    return { ts, account: 'owner@example.com', model, promptTokens: 10, completionTokens: 5, credit, ok }
+  }
+
+  it('今日积分只累加本地当天，与累计积分并存', () => {
+    const summary = summarizeUsage([
+      entry(at(10, 29, 23, 55), 'glm-5.3-flash', 2.5),
+      entry(at(10, 30, 0, 5), 'glm-5.3-flash', 1.25),
+      entry(at(10, 30, 9, 0), 'hy3', 0.5),
+    ], now)
+    expect(summary.credit).toBe(4.25)
+    const glm = summary.byModel.find((row) => row.model === 'glm-5.3-flash')!
+    expect(glm.requests).toBe(2)
+    expect(glm.credit).toBe(3.75)
+    expect(glm.todayRequests).toBe(1)
+    expect(glm.todayCredit).toBe(1.25)
+    expect(summary.byModel.find((row) => row.model === 'hy3')!.todayCredit).toBe(0.5)
+  })
+
+  it('零点整算今天，前一日最后一分钟算昨天', () => {
+    const row = summarizeUsage([
+      entry(at(10, 29, 23, 59), 'hy3', 1),
+      entry(at(10, 30, 0, 0), 'hy3', 2),
+    ], now).byModel[0]!
+    expect(row.credit).toBe(3)
+    expect(row.todayRequests).toBe(1)
+    expect(row.todayCredit).toBe(2)
+  })
+
+  it('credit 未知的失败请求计入请求数但不抵扣积分合计', () => {
+    const summary = summarizeUsage([
+      entry(at(10, 30, 10, 0), 'hy3', 0.3),
+      entry(at(10, 30, 10, 1), 'hy3', null, false),
+    ], now)
+    const row = summary.byModel[0]!
+    expect(summary.credit).toBeNull()
+    expect(summary.errors).toBe(1)
+    expect(row.todayRequests).toBe(2)
+    expect(row.todayCredit).toBeCloseTo(0.3)
+  })
+
+  it('空台账不产生模型行', () => {
+    const summary = summarizeUsage([], now)
+    expect(summary.requests).toBe(0)
+    expect(summary.byModel).toEqual([])
   })
 })
