@@ -268,7 +268,7 @@ function stripHeaderFingerprints(text: string): string {
   return out
 }
 
-interface UsageEntry {
+export interface UsageEntry {
   ts: number
   account: string
   model: string
@@ -512,6 +512,18 @@ export function recentUsage(): UsageEntry[] {
   return [...usageRing].reverse()
 }
 
+export interface UsageModelSummary {
+  model: string
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  credit: number | null
+  /** 今日（本地时区 0 点起）请求数 */
+  todayRequests: number
+  /** 今日已扣积分；credit 未知的失败请求不计入 */
+  todayCredit: number
+}
+
 export interface UsageSummary {
   requests: number
   ok: number
@@ -519,35 +531,58 @@ export interface UsageSummary {
   promptTokens: number
   completionTokens: number
   credit: number | null
-  byModel: { model: string; requests: number; promptTokens: number; completionTokens: number; credit: number | null }[]
+  byModel: UsageModelSummary[]
 }
 
-/** 汇总当前台账（含持久化历史）。credit 为 null 的失败请求不计入积分合计。 */
-export function usageSummary(): UsageSummary {
-  const byModel = new Map<string, { model: string; requests: number; promptTokens: number; completionTokens: number; credit: number | null }>()
+/** 本地时区当天 0 点。按机器时区切日，UTC 会把临近午夜的用量算到隔天。 */
+function startOfDay(now: number): number {
+  const date = new Date(now)
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+/**
+ * 把台账折算成累计 + 今日汇总。纯函数（入参显式）以便单测覆盖跨日边界。
+ * credit 为 null 的失败请求不计入积分合计，但计入请求数。
+ */
+export function summarizeUsage(entries: UsageEntry[], now: number): UsageSummary {
+  const todayStart = startOfDay(now)
+  const byModel = new Map<string, UsageModelSummary>()
   const total: UsageSummary = {
-    requests: usageRing.length, ok: 0, errors: 0,
+    requests: entries.length, ok: 0, errors: 0,
     promptTokens: 0, completionTokens: 0, credit: 0,
     byModel: [],
   }
   let creditKnown = true
-  for (const entry of usageRing) {
+  for (const entry of entries) {
+    const credit = typeof entry.credit === 'number' ? entry.credit : null
     if (entry.ok) total.ok += 1
     else total.errors += 1
     total.promptTokens += entry.promptTokens
     total.completionTokens += entry.completionTokens
-    if (entry.credit !== null && entry.credit !== undefined) total.credit += entry.credit
-    else creditKnown = false
-    const row = byModel.get(entry.model) ?? { model: entry.model, requests: 0, promptTokens: 0, completionTokens: 0, credit: 0 }
+    if (credit === null) creditKnown = false
+    else total.credit = (total.credit ?? 0) + credit
+    const row: UsageModelSummary = byModel.get(entry.model) ?? {
+      model: entry.model, requests: 0, promptTokens: 0, completionTokens: 0, credit: 0, todayRequests: 0, todayCredit: 0,
+    }
     row.requests += 1
     row.promptTokens += entry.promptTokens
     row.completionTokens += entry.completionTokens
-    if (entry.credit !== null && entry.credit !== undefined) row.credit += entry.credit
+    if (credit !== null) row.credit = (row.credit ?? 0) + credit
+    if (entry.ts >= todayStart) {
+      row.todayRequests += 1
+      if (credit !== null) row.todayCredit += credit
+    }
     byModel.set(entry.model, row)
   }
-  total.byModel = [...byModel.values()].sort((a, b) => b.credit - a.credit || b.requests - a.requests)
+  total.byModel = [...byModel.values()].sort((a, b) => (b.credit ?? 0) - (a.credit ?? 0) || b.requests - a.requests)
   if (!creditKnown) total.credit = null
   return total
+}
+
+/** 汇总当前运行时台账（含持久化历史）。 */
+export function usageSummary(): UsageSummary {
+  return summarizeUsage(usageRing, Date.now())
 }
 
 export function accountName(account: WbAccount): string {

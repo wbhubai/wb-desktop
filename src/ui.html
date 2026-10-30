@@ -437,8 +437,8 @@ async function loadGateway() {
       (s.errors > 0 ? '<span class="tag err">失败 ' + s.errors + '</span>' : '') +
       '<span class="tag">输入 ' + s.promptTokens + ' / 输出 ' + s.completionTokens + ' tokens</span>' +
       '<span class="tag ' + (s.credit === null ? 'warn' : 'ok') + '">积分扣费 ' + (s.credit === null ? '含未知（失败请求）' : fmtCredit(s.credit)) + '</span></div>';
-    html += '<table><tr><th>模型</th><th>请求</th><th>tokens(入+出)</th><th>积分</th></tr>' +
-      s.byModel.map(m => '<tr><td>' + esc(m.model) + '</td><td>' + m.requests + '</td><td>' + m.promptTokens + ' + ' + m.completionTokens + '</td><td>' + fmtCredit(m.credit) + '</td></tr>').join('') + '</table>';
+    html += '<table><tr><th>模型</th><th>请求</th><th>tokens(入+出)</th><th>积分</th><th>今日积分</th></tr>' +
+      s.byModel.map(m => '<tr><td>' + esc(m.model) + '</td><td>' + m.requests + '</td><td>' + m.promptTokens + ' + ' + m.completionTokens + '</td><td>' + fmtCredit(m.credit) + '</td><td>' + fmtCredit(m.todayCredit) + '</td></tr>').join('') + '</table>';
   }
   html += '<div class="muted" style="margin-top:10px">最近 ' + Math.min(usage.length, 30) + ' / ' + usage.length + ' 条调用明细</div>';
   const categoryLabel = { rate_limit_error: '限流', authentication_error: '鉴权', not_found_error: '不存在', invalid_request_error: '请求', overloaded_error: '过载', api_error: '服务端', client_aborted: '已取消' };
