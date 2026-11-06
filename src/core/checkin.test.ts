@@ -113,8 +113,21 @@ describe('due logic', () => {
     expect(dueAccounts(all, NOW, TEST_WINDOW, []).map((entry) => entry.id)).toEqual(['b'])
     expect(dueAccounts(all, NOW, undefined, []).map((entry) => entry.id)).toEqual(['b'])
   })
-  it('unset window never filters accounts', () => {
+  it('unset window leaves only accounts not answered today', () => {
+    const answered: CheckinLogRow[] = [{ ts: NOW - 60_000, accountId: 'a', result: 'success' }]
+    expect(dueAccounts([acc('a'), acc('b')], NOW, undefined, answered).map((entry) => entry.id)).toEqual(['b'])
     expect(dueAccounts([acc('a'), acc('b')], NOW, undefined, [])).toHaveLength(2)
+  })
+  it('unset window counts success and already from the current local day only', () => {
+    const today = new Date('2026-09-29T00:00:00').getTime()
+    const lastNight = today - 1
+    const row = (ts: number, result: CheckinLogRow['result']): CheckinLogRow[] => [{ ts, accountId: 'a', result }]
+    expect(accountDue(NOW, acc('a'), undefined, [])).toBe(true)
+    expect(accountDue(NOW, acc('a'), undefined, row(today, 'success'))).toBe(false)
+    expect(accountDue(NOW, acc('a'), undefined, row(today, 'already'))).toBe(false)
+    expect(accountDue(NOW, acc('a'), undefined, row(today, 'error'))).toBe(true)
+    expect(accountDue(NOW, acc('a'), undefined, row(lastNight, 'success'))).toBe(true)
+    expect(accountDue(NOW, acc('b'), undefined, row(today, 'success'))).toBe(true)
   })
 })
 

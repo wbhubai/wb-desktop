@@ -107,15 +107,14 @@ export function accountDue(
   win: [number, number] | undefined,
   logs: CheckinLogRow[],
 ): boolean {
-  if (win === undefined) return true
+  if (win === undefined) return !answeredWindow(logs, account, new Date(now).setHours(0, 0, 0, 0)) // no window: once per local day
   const latest = latestTargetMs(now, win, account.id ?? account.displayName)
   // unresolvable target is treated as due (conservative)
   return latest === undefined ? true : !answeredWindow(logs, account, latest)
 }
 
-export function dueAccounts(accounts: DueAccountInput[], now: number, win: [number, number] | undefined, logs: CheckinLogRow[]): DueAccountInput[] {
-  const eligible = accounts.filter((account) => account.supportsCheckin && !account.excluded)
-  return win === undefined ? eligible : eligible.filter((account) => accountDue(now, account, win, logs))
+export function dueAccounts<T extends DueAccountInput>(accounts: T[], now: number, win: [number, number] | undefined, logs: CheckinLogRow[]): T[] {
+  return accounts.filter((account) => account.supportsCheckin && !account.excluded && accountDue(now, account, win, logs))
 }
 
 // ---------------------------------------------------------- cycle planning
