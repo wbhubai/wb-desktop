@@ -40,8 +40,10 @@ import {
   decideFromStatus,
   defaultCheckinConfig,
   dueAccounts,
+  FAST_RETRY_MAX,
   isInactiveMessage,
   normalizeCheckinLogs,
+  planNextDelay,
   windowMinutes,
   type CheckinConfig,
   type CheckinLogRow,
@@ -117,7 +119,7 @@ async function recordError(message: string, detail: unknown): Promise<void> {
   await recordAt(dataFile('error.log'), buildEntry('backend', message, JSON.stringify(detail ?? ''), nowMs(), 'wb-desktop', process.platform)).catch(() => {})
 }
 
-const cycleState = { checkinBusy: false, travelBusy: false, claimBusy: false, growthBusy: false, fastRetryBudget: 12 }
+const cycleState = { checkinBusy: false, travelBusy: false, claimBusy: false, growthBusy: false, fastRetryBudget: FAST_RETRY_MAX, nextCheckinAt: 0 }
 let lastKeepaliveDay = ''
 
 export const oauth = new OAuthFlow(async (collected) => {
@@ -188,6 +190,7 @@ async function appendCheckinLog(row: CheckinLogRow): Promise<void> {
 
 export async function checkinCycle(manual = false): Promise<unknown> {
   if (cycleState.checkinBusy) return manual ? { status: 'skipped', reason: 'already_running' } : undefined
+  if (!manual && Date.now() < cycleState.nextCheckinAt) return { status: 'skipped', reason: 'waiting_next_cycle' }
   cycleState.checkinBusy = true
   try {
     const config = await readConfig<CheckinConfig>('checkin-config.json', defaultCheckinConfig(false))
@@ -196,24 +199,33 @@ export async function checkinCycle(manual = false): Promise<unknown> {
     const win = windowMinutes(config)
     const eligible = currentAccounts()
       .filter((record) => supportsCheckin(variantOf(record)) && !config.excluded_account_ids.includes(getStr(record, 'id') ?? ''))
-      .map((record) => ({ record, id: getStr(record, 'id') ?? undefined, displayName: getStr(record, 'email') ?? getStr(record, 'nickname') ?? 'unknown' }))
+      .map((record) => ({ record, id: getStr(record, 'id') ?? undefined, displayName: getStr(record, 'email') ?? getStr(record, 'nickname') ?? 'unknown', excluded: false, supportsCheckin: true }))
     if (eligible.length === 0) return { status: 'skipped', reason: 'no_accounts' }
     const logs = await readList<CheckinLogRow>('checkin-logs.json')
     // 手动执行 = 强制检查全部符合条件账号（wbs run_checkin_all 语义）
     const due = manual ? eligible : dueAccounts(eligible, Date.now(), win, logs)
-    if (!manual && win !== undefined && due.length === 0) return { status: 'skipped', reason: 'before_checkin_time' }
-    let hadErrors = false
+    if (!manual && due.length === 0) return { status: 'skipped', reason: 'nothing_due' }
+    let failed = 0
     const rows: unknown[] = []
     for (const entry of due) {
-      const result = await checkinAccount(entry.record)
-      if (result.result === 'success' || result.result === 'already') {
-        await appendCheckinLog({ ts: Date.now(), accountId: entry.id, email: entry.displayName, variant: variantOf(entry.record), result: result.result })
+      let result: Awaited<ReturnType<typeof checkinAccount>>
+      // 单个账号抛异常（含结果写盘失败）不能拖累后面的账号，也不能跳过下面的重试排期
+      try {
+        result = await checkinAccount(entry.record)
+        if (result.result === 'success' || result.result === 'already') {
+          await appendCheckinLog({ ts: Date.now(), accountId: entry.id, email: entry.displayName, variant: variantOf(entry.record), result: result.result })
+        }
+      } catch (error) {
+        result = { result: 'error', error: error instanceof Error ? error.message : String(error) }
       }
-      if (result.result === 'error') hadErrors = true
+      if (result.result === 'error') failed += 1
       rows.push({ accountId: entry.id, email: entry.displayName, ...result })
     }
-    await writeConfig('checkin-logs.json', normalizeCheckinLogs(logs))
-    pushLog('info', `签到循环完成（${rows.length} 个账号）`)
+    const hadErrors = failed > 0
+    const plan = planNextDelay(hadErrors, cycleState.fastRetryBudget, Date.now(), eligible, win, logs)
+    cycleState.fastRetryBudget = hadErrors ? plan.budget : FAST_RETRY_MAX
+    cycleState.nextCheckinAt = Date.now() + plan.delayMs
+    pushLog(hadErrors ? 'warn' : 'info', `签到循环完成（${rows.length} 个账号，失败 ${failed}）`, { rows })
     return { status: 'ok', accounts: rows, _hadErrors: hadErrors }
   } finally {
     cycleState.checkinBusy = false
