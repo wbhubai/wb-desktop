@@ -445,6 +445,8 @@ async function wbCredits() {
 function renderTravel(r) {
   const st = document.getElementById('trState');
   if (st) { st.textContent = r.enabled ? '自动：开' : '自动：关'; st.className = 'tag ' + (r.enabled ? 'ok' : 'err'); }
+  const en = document.getElementById('wbTravelEnabled');
+  if (en) en.checked = !!r.enabled;
   document.getElementById('wbTravel').innerHTML = '<table><tr><th>账号</th><th>状态</th></tr>' +
     (r.accounts || []).map(a => '<tr><td>' + esc(a.name) + '</td><td><span class="tag ' + (a.label === 'finished' ? 'ok' : a.label === 'unsupported' ? 'err' : a.label === 'traveling' ? 'ok' : 'warn') + '">' + esc(a.label) + (a.locationName ? ' · ' + esc(a.locationName) : '') + '</span></td></tr>').join('') + '</table>';
 }
