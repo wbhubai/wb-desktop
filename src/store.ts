@@ -93,7 +93,9 @@ export async function readConfig<T>(name: string, fallback: T): Promise<T> {
     const mtimeMs = (await stat(file)).mtimeMs
     const cached = configCache.get(name)
     if (cached && cached.mtimeMs === mtimeMs) return structuredClone(cached.data) as T
-    const data = ((await readJson<T>(file)) ?? fallback) as T
+    // 文件读不出来（损坏/瞬时 IO 失败）时不缓存降级值——否则瞬时故障会被记住到下次写入为止
+    const data = await readJson<T>(file)
+    if (data === undefined) return fallback
     configCache.set(name, { mtimeMs, data })
     return structuredClone(data) as T
   } catch {

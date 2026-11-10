@@ -2,7 +2,7 @@
  * checkinCycle 端到端：调度、落盘和 HTTP 分支都走真实代码，只替换全局 fetch
  * 和 home 目录（数据目录随 os.homedir() 落到临时目录）。
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -39,7 +39,7 @@ async function boot(accounts: Record<string, unknown>[], config: Record<string, 
   await writeFile(store.dataFile('accounts.json'), JSON.stringify(accounts))
   await store.writeConfig('checkin-config.json', { enabled: true, excluded_account_ids: [], checkin_start: '', checkin_end: '', keepalive_days: 0, ...config })
   const { checkinCycle, recentLogs } = await import('./app.ts')
-  return { checkinCycle, recentLogs, logsFile: store.dataFile('checkin-logs.json'), logs: () => store.readList<CheckinLogRow>('checkin-logs.json') }
+  return { checkinCycle, recentLogs, accountsFile: store.dataFile('accounts.json'), logsFile: store.dataFile('checkin-logs.json'), logs: () => store.readList<CheckinLogRow>('checkin-logs.json') }
 }
 
 beforeEach(async () => {
@@ -200,6 +200,57 @@ describe('with a time window', () => {
     at(NEXT_DAY + 5 * MINUTE)
     await checkinCycle()
     expect(requests).toHaveLength(nextDayAttempt * 2)
+  })
+})
+
+describe('token freshness', () => {
+  const refreshed = () => ({ code: 0, data: { accessToken: 'token-a1-v2', expiresAt: START + 30 * 86_400_000 } })
+
+  it('refreshes a stale token and checks in with the new one', async () => {
+    reply = (url) => (url.includes('/auth/token/refresh') ? refreshed() : unchecked(url, ''))
+    const { checkinCycle } = await boot([account('a1', { refresh_token: 'rt-a1', expiresAt: START + 60 * 60_000 })])
+    await checkinCycle()
+    expect(requests.filter((r) => r.url.endsWith(STATUS)).map((r) => r.token)).toEqual(['token-a1-v2'])
+    expect(submits().map((r) => r.token)).toEqual(['token-a1-v2'])
+  })
+
+  it('retries a 401 with the rotated token', async () => {
+    let statusCalls = 0
+    reply = (url) => {
+      if (url.includes('/auth/token/refresh')) return refreshed()
+      if (url.endsWith(STATUS)) {
+        statusCalls += 1
+        return statusCalls === 1 ? { code: 401, message: 'unauthorized' } : { code: 0, data: { today_checked_in: true } }
+      }
+      return { code: 0 }
+    }
+    const { checkinCycle, logs } = await boot([account('a1', { refresh_token: 'rt-a1', expiresAt: START + 30 * 86_400_000 })])
+    await checkinCycle()
+    expect(requests.filter((r) => r.url.endsWith(STATUS)).map((r) => r.token)).toEqual(['token-a1', 'token-a1-v2'])
+    expect(submits()).toHaveLength(0)
+    expect((await logs()).map((row) => row.result)).toEqual(['already'])
+  })
+
+  it('a failed retry-refresh keeps the rotated token instead of reverting it', async () => {
+    let refreshCalls = 0
+    reply = (url) => {
+      if (url.includes('/auth/token/refresh')) {
+        refreshCalls += 1
+        return refreshCalls === 1 ? refreshed() : { code: 500, message: 'boom' }
+      }
+      if (url.endsWith(STATUS)) return { code: 401, message: 'unauthorized' }
+      return { code: 0 }
+    }
+    const { checkinCycle, accountsFile } = await boot([account('a1', { refresh_token: 'rt-a1' })])
+    await checkinCycle()
+    // upsert 是 fire-and-forget 写盘，轮询等它落地（全量并行跑时固定延时不可靠）
+    let stored: Array<Record<string, unknown>> = []
+    await vi.waitFor(async () => {
+      stored = JSON.parse(await readFile(accountsFile, 'utf8'))
+      expect(stored[0].refresh_fail_count).toBe(1)
+    }, { timeout: 15_000 }) // Windows 下写盘可能走 EBUSY 退避重试（最长约 2.3s），负载高时更久
+    expect(stored[0].access_token).toBe('token-a1-v2')
+    expect(stored[0].needs_relogin).toBeUndefined()
   })
 })
 

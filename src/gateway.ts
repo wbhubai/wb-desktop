@@ -15,6 +15,7 @@
  */
 import { dataFile, loadAccounts, currentAccounts, persistAccounts, readConfig, writeConfig } from './store.ts'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildAuthHeaders, findAccountIn, getStr, isEnvelope, type WbAccount } from './core/account.ts'
 import { refreshAccountToken } from './core/refresh.ts'
@@ -339,6 +340,11 @@ export async function gatewayConfig(): Promise<GatewayConfig> {
       ...(config.rulesUrl !== undefined ? { rulesUrl: config.rulesUrl } : {}),
       ...(config.activeAccountId !== undefined ? { activeAccountId: config.activeAccountId } : {}),
     }
+  }
+  // gateway.json 存在但读不出来（损坏/瞬时 IO 失败）时绝不走下面的首跑分支——
+  // 那会生成新虚拟 Key 覆写配置，所有客户端立刻 401
+  if (existsSync(dataFile('gateway.json'))) {
+    throw new Error('gateway.json 存在但无法读取，已阻止自动重置；请检查/修复 ~/.wb-hub/gateway.json 后重试')
   }
   // first run: generate and PERSIST immediately so every reader sees the same key
   const initial: GatewayConfig = {
@@ -876,7 +882,7 @@ function withIdleWatchdog(body: ReadableStream<Uint8Array>, controller: AbortCon
   )
 }
 
-async function upstreamCall(account: WbAccount, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+export async function upstreamCall(account: WbAccount, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   const config = await gatewayConfig()
   const effective = sanitizeBody({ ...body }, config.signatureRewrites ?? DEFAULT_SIGNATURE_REWRITES)
   if (config.thinking === 'disabled') {
@@ -885,9 +891,13 @@ async function upstreamCall(account: WbAccount, body: Record<string, unknown>, s
     delete effective['reasoning_effort']
     delete effective['reasoning']
   }
+  // 已断开的请求不再排队、也不发上游（中断不扣费）
+  signal?.throwIfAborted()
   const slot = accountSlot(account)
   await slot.acquire()
   try {
+    // 排队期间断开：abort 事件已派发过，里面的监听不会再触发，必须显式检查
+    signal?.throwIfAborted()
     return await upstreamCallInner(account, effective, signal)
   } finally {
     slot.release()

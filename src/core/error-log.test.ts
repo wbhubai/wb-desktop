@@ -6,7 +6,8 @@ import path from 'node:path'
 import { buildEntry, listAt, normalizeKind, recordAt, truncateDetail, ERROR_LOG_MAX_LINES } from './error-log.ts'
 
 describe('error log', () => {
-  it('ring keeps only the last 200 lines (listAt returns newest first)', async () => {
+  // 251 次串行“读全文件+重写”是 O(n²) fs 负载，与其他测试文件并行时可能超过默认 20s
+  it('ring keeps only the last 200 lines (listAt returns newest first)', { timeout: 90_000 }, async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wb-elog-'))
     const file = path.join(dir, 'error.log')
     for (let index = 1; index <= 250; index++) {
