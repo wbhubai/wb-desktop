@@ -112,7 +112,7 @@ export async function runMcpStdio(): Promise<void> {
         reply(req.id ?? null, {
           protocolVersion: requested,
           capabilities: { tools: {} },
-          serverInfo: { name: 'wb-desktop', version: '0.2.3' },
+          serverInfo: { name: 'wb-desktop', version: '0.2.4' },
         })
         continue
       }
