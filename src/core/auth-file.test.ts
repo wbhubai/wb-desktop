@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
+import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -122,5 +122,28 @@ describe('backup', () => {
     const root = await readAuthFile('ai', home, 'windows')
     expect(root?.['auth']).toEqual({ accessToken: 'x' })
     await rm(home, { recursive: true, force: true })
+  })
+
+  it('caps backups at 20 per variant, dropping the oldest', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-10T08:00:00Z').getTime() })
+    try {
+      const home = await tmpRoot()
+      const target = authFilePath('cn', home, 'windows')
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, '{"auth":{"accessToken":"x"}}')
+      const backupDir = path.join(home, 'backups')
+      for (let i = 0; i < 22; i++) {
+        await backupAuthFile('cn', backupDir, home, 'windows')
+        vi.advanceTimersByTime(60_000)
+      }
+      const files = (await readdir(backupDir)).sort()
+      expect(files).toHaveLength(20)
+      expect(files[0]!.startsWith('workbuddy-desktop.')).toBe(true)
+      const newest = await backupAuthFile('cn', backupDir, home, 'windows')
+      expect(files).not.toContain(path.basename(newest!))
+      expect((await readdir(backupDir)).length).toBe(20)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

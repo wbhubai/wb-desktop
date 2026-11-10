@@ -248,13 +248,18 @@
 async function api(path, method = 'GET', body) {
   const r = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const t = await r.text();
-  try { return JSON.parse(t); } catch { return { raw: t, status: r.status }; }
+  let data; try { data = JSON.parse(t); } catch { data = { raw: t }; }
+  // 非 2xx 一律抛错：后端错误必须走到调用方的 catch 显示失败，不能被当成数据渲染成「done」
+  if (!r.ok) throw new Error((data && typeof data.error === 'string' && data.error) || ('HTTP ' + r.status));
+  return data;
 }
 function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtCredit(v) { return typeof v === 'number' && Number.isFinite(v) ? String(Math.round(v * 10000) / 10000) : '—'; }
 function wbState(text, scope) { if (!scope) return; document.querySelectorAll('.wbstate[data-state="' + scope + '"]').forEach(el => { el.textContent = text; }); }
 const OUTCOME_LABELS = { claimed: '领取成功', dispatched: '派发成功', waiting: '途中', arrived: '待领取', 'already-traveling': '已在途中', 'daily-limit': '今日上限', idle: '无行程', 'no-action': '无动作', skipped: '跳过', success: '成功', already: '已签过', inactive: '未开放', error: '失败' };
 function summarizeOutcome(label, r) {
+  // 兜底：直连结果对象带 error 时明确显示失败，绝不落进下面的 done 分支
+  if (r && typeof r === 'object' && r.error) return '失败：' + r.error;
   // 未执行的明确提示：无账号/自动未开启时按钮不再显示误导性的 "ok"
   if (r?.status === 'skipped') {
     return r.reason === 'no_accounts' ? '无账号，未执行' : '跳过' + (r.reason ? '（' + r.reason + '）' : '');
@@ -382,14 +387,29 @@ function showOpLogDetail(i) {
 /* ── 账号助手 ── */
 let wbLoginId = null, wbTimer = null;
 async function wbLogin() {
+  // 重复点击会覆盖 wbTimer 且旧轮询永远停不下来（每 2.5s 刷一次页面，冲掉未保存的编辑）
+  if (wbTimer) clearInterval(wbTimer);
   const variant = document.getElementById('wbVariant').value;
   const start = await api('/login/start', 'POST', { variant });
   document.getElementById('wbLoginState').innerHTML = '<a target="_blank" href="' + esc(start.verificationUri) + '">打开授权页</a>';
-  wbLoginId = start.loginId;
-  wbTimer = setInterval(async () => {
-    const poll = await api('/login/poll?loginId=' + encodeURIComponent(wbLoginId));
-    if (poll.done) { clearInterval(wbTimer); document.getElementById('wbLoginState').textContent = poll.error ? ('失败: ' + poll.error) : '成功！'; loadWb(); }
+  const loginId = start.loginId;
+  wbLoginId = loginId;
+  const timer = setInterval(async () => {
+    try {
+      const poll = await api('/login/poll?loginId=' + encodeURIComponent(loginId));
+      if (poll.done) {
+        clearInterval(timer);
+        if (wbTimer === timer) wbTimer = null;
+        document.getElementById('wbLoginState').textContent = poll.error ? ('失败: ' + poll.error) : '成功！';
+        loadWb();
+      }
+    } catch (e) {
+      clearInterval(timer);
+      if (wbTimer === timer) wbTimer = null;
+      document.getElementById('wbLoginState').textContent = '轮询失败: ' + (e && e.message ? e.message : e);
+    }
   }, 2500);
+  wbTimer = timer;
 }
 function metaRow(a) {
   const exp = a.expiresAt ? new Date(a.expiresAt).toLocaleString() : '—';
@@ -401,11 +421,16 @@ function metaRow(a) {
     '<tr class="acct-feedback" data-feedback="' + esc(a.id) + '" style="display:none"><td colspan="5" class="muted"></td></tr>';
 }
 async function loadWb() {
-  const accs = await api('/accounts');
-  document.getElementById('wbAccounts').innerHTML = '<table><tr><th>账号</th><th>档位</th><th>过期</th><th>状态</th><th>操作</th></tr>' +
-    (accs.accounts || []).map(metaRow).join('') + '</table>';
-  const cfg = await api('/checkin/config');
-  document.getElementById('wbCheckinCfg').innerHTML = checkinForm(cfg);
+  // 分块容错：任一接口失败保留页面上已有的内容，不让整页渲染中断
+  try {
+    const accs = await api('/accounts');
+    document.getElementById('wbAccounts').innerHTML = '<table><tr><th>账号</th><th>档位</th><th>过期</th><th>状态</th><th>操作</th></tr>' +
+      (accs.accounts || []).map(metaRow).join('') + '</table>';
+  } catch {}
+  try {
+    const cfg = await api('/checkin/config');
+    document.getElementById('wbCheckinCfg').innerHTML = checkinForm(cfg);
+  } catch {}
   try { renderTravel(await api('/travel/status')); } catch {}
 }
 function checkinForm(c) {
@@ -458,7 +483,9 @@ async function wbTravelRefresh() {
 
 /* ── 网关代理（模型网关） ── */
 async function loadGateway() {
-  const r = await api('/gateway/config');
+  // 任一接口失败保留页面已有内容，避免整页被错误响应清空后误保存
+  try {
+    const r = await api('/gateway/config');
   document.getElementById('gwKey').value = r.virtualKey || '';
   document.getElementById('gwLanHint').textContent = (r.lan && (r.lan.hosts || []).length)
     ? '内网接入：baseURL http://' + r.lan.hosts.join(' 或 http://') + ':' + r.lan.port + '/v1（接入格式与上方相同，API Key 相同；仅开放 AI 网关，不含管理界面。内网其他机器首次使用需在本机防火墙放行 ' + r.lan.port + '/TCP，多网卡时选实际所在网段的地址）'
@@ -493,6 +520,7 @@ async function loadGateway() {
   html += '<table style="margin-top:4px"><tr><th>时间</th><th>账号</th><th>模型</th><th>tokens</th><th>积分</th><th>状态</th><th>分类</th></tr>' +
     (usage.length ? usage.slice(0, 30).map(u => '<tr><td>' + new Date(u.ts).toLocaleTimeString() + '</td><td>' + esc(u.account) + '</td><td>' + esc(u.model) + '</td><td>' + (u.promptTokens || 0) + ' + ' + (u.completionTokens || 0) + '</td><td>' + (u.credit === null || u.credit === undefined ? '—' : u.credit) + '</td><td>' + (u.ok ? '<span class="tag ok">成功</span>' : '<span class="tag err" title="' + esc(u.error || '') + '">失败</span>') + '</td><td>' + (u.category ? '<span class="tag ' + (u.category === 'rate_limit_error' || u.category === 'client_aborted' ? 'warn' : 'err') + '">' + esc(categoryLabel[u.category] || u.category) + '</span>' : '') + '</td></tr>').join('') : '<tr><td colspan="7" class="muted">暂无调用记录</td></tr>') + '</table>';
   document.getElementById('gwUsage').innerHTML = html;
+  } catch {}
 }
 async function gwSaveAccount() {
   const btn = document.getElementById('gwSaveAccountBtn');
@@ -617,25 +645,34 @@ function gwModelsToggle(btn) {
   window.__modelCatalogExpanded = !window.__modelCatalogExpanded;
   renderModelCatalog(window.__modelCatalogFull || []);
 }
+// 后端 POST models 是全量替换（缺席即删除），所以每次都基于服务端最新清单拼列表，
+// 绝不能拿页面缓存的 catalog——否则会把后台同步/调用学习新增的模型一起删掉
+async function currentModelIds() {
+  const r = await api('/gateway/config');
+  return (r.modelCatalog || []).map(function (m) { return m.id; });
+}
 async function gwModelAdd(btn) {
   const input = document.getElementById('gwModelAdd');
   const id = (input.value || '').trim();
   if (!id) return;
   btn.textContent = '添加中…';
   try {
-    const ids = currentModelIds();
-    if (ids.indexOf(id) === -1) ids.push(id);
-    await api('/gateway/config', 'POST', { models: ids });
-    input.value = '';
-    loadGateway();
-    btn.textContent = '已添加 ✓';
-  } catch (e) { btn.textContent = '添加失败'; }
+    const ids = await currentModelIds();
+    if (ids.indexOf(id) !== -1) {
+      btn.textContent = '已存在';
+    } else {
+      await api('/gateway/config', 'POST', { models: ids.concat([id]) });
+      input.value = '';
+      loadGateway();
+      btn.textContent = '已添加 ✓';
+    }
+  } catch (e) { pushOpLog('添加模型失败', String(e)); btn.textContent = '添加失败'; }
   setTimeout(function () { btn.textContent = '添加'; }, 1500);
 }
 async function gwModelDel(btn) {
   const id = btn.dataset.id;
   try {
-    const ids = currentModelIds().filter(function (x) { return x !== id; });
+    const ids = (await currentModelIds()).filter(function (x) { return x !== id; });
     await api('/gateway/config', 'POST', { models: ids });
     loadGateway();
   } catch (e) { pushOpLog('删除模型失败', String(e)); }
@@ -645,9 +682,8 @@ async function gwSyncModels(btn) {
   wbState('模型目录同步：拉取官方 /v3/config（免费）…', 'gw');
   try {
     const r = await api('/gateway/models/sync', 'POST', {});
-    if (r.error) { wbState('模型目录同步：' + r.error, 'gw'); btn.textContent = '同步失败'; }
-    else { wbState('模型目录同步：完成，共 ' + r.count + ' 个模型', 'gw'); btn.textContent = '已同步 ✓'; loadGateway(); }
-  } catch (e) { wbState('模型目录同步：失败', 'gw'); btn.textContent = '同步失败'; }
+    wbState('模型目录同步：完成，共 ' + r.count + ' 个模型', 'gw'); btn.textContent = '已同步 ✓'; loadGateway();
+  } catch (e) { wbState('模型目录同步：失败（' + (e && e.message ? e.message : e) + '）', 'gw'); btn.textContent = '同步失败'; }
   setTimeout(function () { btn.textContent = '同步官方目录（免费）'; }, 1500);
 }
 async function gwRefreshModels(btn) {
@@ -658,7 +694,7 @@ async function gwRefreshModels(btn) {
     pushOpLog('模型探测', '模型探测结果：\n' + lines.join('\n'));
     wbState('模型探测：完成，确认可用 ' + (r.models || []).length + ' 个', 'gw');
     loadGateway();
-  } catch (e) { wbState('模型探测：失败', 'gw'); }
+  } catch (e) { wbState('模型探测：失败（' + (e && e.message ? e.message : e) + '）', 'gw'); }
 }
 function renderSignatures(sigs) {
   document.getElementById('gwSignatures').innerHTML = (sigs.length

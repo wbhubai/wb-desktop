@@ -89,7 +89,8 @@ export async function refreshAccountToken(
   if (!refreshToken) {
     updated['needs_relogin'] = true
     updated['needs_relogin_reason'] = '缺少 refresh token，无法刷新，需重新登录'
-    upsert(updated)
+    // 必须等待写盘：upsert 是异步持久化，不 await 会让连续两次刷新的落盘顺序不确定
+    await upsert(updated)
     return { account: updated, ok: false, error: updated['needs_relogin_reason'] as string }
   }
   const response = await http(refreshUrl(variant), 'POST', {}, refreshHeaders(updated, refreshToken))
@@ -102,7 +103,7 @@ export async function refreshAccountToken(
       updated['needs_relogin'] = true
       updated['needs_relogin_reason'] = `连续 ${fails} 次刷新失败(code=${code ?? '空'}): ${message}`
     }
-    upsert(updated)
+    await upsert(updated)
     const errorText = `刷新失败(code=${code ?? '空'}): ${message}`
     return { account: updated, ok: false, error: updated['needs_relogin'] ? (updated['needs_relogin_reason'] as string) : errorText }
   }
@@ -115,7 +116,7 @@ export async function refreshAccountToken(
       updated['needs_relogin'] = true
       updated['needs_relogin_reason'] = `连续 ${fails} 次刷新失败: 刷新响应缺少 accessToken`
     }
-    upsert(updated)
+    await upsert(updated)
     const errorText = '刷新响应缺少 accessToken'
     return { account: updated, ok: false, error: updated['needs_relogin'] ? (updated['needs_relogin_reason'] as string) : errorText }
   }
@@ -146,7 +147,7 @@ export async function refreshAccountToken(
   delete updated['needs_relogin']
   delete updated['needs_relogin_reason']
   delete updated['refresh_fail_count']
-  upsert(updated)
+  await upsert(updated)
   return { account: updated, ok: true }
 }
 

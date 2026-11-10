@@ -5,12 +5,13 @@
  * decrypted, never blanked), and field extraction for local import.
  */
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { getStr, isEnvelope, secretValue, type WbAccount } from './account.ts'
 import { isPlainObject, nowMs, utcIso } from './util.ts'
 import {
+  authFileName,
   authFilePathAt,
   backupFileName,
   currentHostOs,
@@ -188,6 +189,9 @@ export async function readAuthFile(variant: WbVariant, home = homeDir(), os: Hos
   }
 }
 
+/** 每个档位保留的认证文件备份份数（含明文凭据，不能无限累积）。 */
+const BACKUP_RETENTION = 20
+
 export async function backupAuthFile(
   variant: WbVariant,
   backupDir: string,
@@ -199,7 +203,20 @@ export async function backupAuthFile(
   await mkdir(backupDir, { recursive: true })
   const dest = path.join(backupDir, backupFileName(variant, utcIso()))
   await copyFile(file, dest)
+  await pruneBackups(backupDir, `${authFileName(variant).replace(/\.info$/, '')}.`)
   return dest
+}
+
+/** 只保留最近 BACKUP_RETENTION 份本档位备份（best-effort，失败不影响备份本身）。 */
+async function pruneBackups(backupDir: string, prefix: string): Promise<void> {
+  try {
+    const files = (await readdir(backupDir)).filter((name) => name.startsWith(prefix)).sort()
+    for (const name of files.slice(0, Math.max(0, files.length - BACKUP_RETENTION))) {
+      await rm(path.join(backupDir, name), { force: true })
+    }
+  } catch {
+    // 清理失败静默：备份已成功，保留上限只是卫生要求
+  }
 }
 
 async function atomicWrite(file: string, content: string): Promise<void> {

@@ -153,7 +153,10 @@ async function checkinRequest(account: WbAccount, suffix: string): Promise<Recor
     const url = `${variantOf(account) === 'ai' ? 'https://www.workbuddy.ai' : 'https://www.codebuddy.cn'}${path}`
     response = (await fetchHttp(url, 'POST', {}, buildAuthHeaders(account))) as Record<string, unknown>
     if (isUnauthorized(response) && getStr(account, 'refresh_token')) {
-      const result = await refreshAccountToken(account, persistUpdated)
+      // 从 store 取最新记录再刷：否则上一轮刷新轮换掉的 refresh_token 会被旧对象覆盖回旧值
+      const id = getStr(account, 'id')
+      const latest = id ? findAccountIn(currentAccounts(), id) ?? account : account
+      const result = await refreshAccountToken(latest, persistUpdated)
       if (result.ok) response = (await fetchHttp(url, 'POST', {}, buildAuthHeaders(result.account))) as Record<string, unknown>
     }
     const code = response['code']
@@ -165,7 +168,8 @@ async function checkinRequest(account: WbAccount, suffix: string): Promise<Recor
 
 async function checkinAccount(account: WbAccount): Promise<{ result: string; error?: string; inactive?: boolean }> {
   if (!supportsCheckin(variantOf(account))) return { result: 'skipped', error: 'unsupported_variant' }
-  await ensureFreshToken(account, persistUpdated, 24)
+  // 接住刷新结果：store 里可能已写入新 token，后续请求必须用最新凭据
+  account = await ensureFreshToken(account, persistUpdated, 24)
   const statusResponse = await checkinRequest(account, '/checkin-activity-status')
   const unsupported = variantOf(account) === 'cn' && (statusResponse['code'] === 404 || statusResponse['code'] === -1)
   const decision = decideFromStatus(statusFromCheckinResponse(statusResponse, unsupported))
