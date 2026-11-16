@@ -657,6 +657,16 @@ document.addEventListener('click', async (ev) => {
         inlineFeedback(id, r.ok ? ('切换成功' + (r.backup ? '（已备份认证文件）' : '')) : ('失败: ' + (r.error || '')), !r.ok);
       } else if (act === 'refresh') {
         const r = await api('/refresh/' + id, 'POST', {});
+        if (r.ok && r.account) {
+          // refreshOne 响应里带了刷新后的最新账号状态：就地更新过期/状态两格，不等整页重渲染
+          const btn = document.querySelector('button[data-act="refresh"][data-id="' + id + '"]');
+          const tr = btn && btn.closest('tr');
+          if (tr) {
+            const cells = tr.querySelectorAll('td');
+            cells[2].textContent = r.account.expiresAt ? new Date(r.account.expiresAt).toLocaleString() : '—';
+            cells[3].innerHTML = r.account.needsRelogin ? '<span class="tag err">需重登</span>' : '<span class="tag ok">正常</span>';
+          }
+        }
         inlineFeedback(id, r.ok ? 'Token 已刷新' : ('失败: ' + (r.error || '')), !r.ok);
       } else if (act === 'del') {
         await api('/accounts/' + id, 'DELETE');
