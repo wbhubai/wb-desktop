@@ -68,7 +68,11 @@ let tray = null;
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-app.on('second-instance', () => createWindow());
+app.on('second-instance', () => {
+  // ready 前触发时不代劳开窗：ready 前 new BrowserWindow 会抛未捕获异常拖垮常驻进程；
+  // boot 本身就会在 ready 后开窗，这里只需处理「窗口已被关掉」的常见情形
+  if (app.isReady()) createWindow();
+});
 
 // 文本 UI 不需要 GPU 光栅化：禁硬件加速把 gpu-process 从 ~86MB 压到 ~46MB。
 // Chromium 132 的 network/gpu 辅助进程无法归零（disable-features=NetworkService
