@@ -95,6 +95,14 @@ const port = Number(process.env.WB_PORT || 3081);
 let window = null;
 let tray = null;
 
+// 单实例锁：后台、端口与托盘归首实例。再次启动（任务栏固定图标/重复双击）时，
+// 首实例收到 second-instance 事件直接重建/聚焦主界面，第二实例自身静默退出
+// （否则第二实例抢端口失败后静默消失，用户看起来就是「点了没反应」）。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+app.on('second-instance', () => createWindow());
+
 // 文本 UI 不需要 GPU 光栅化：禁硬件加速把 gpu-process 从 ~86MB 压到 ~46MB。
 // Chromium 132 的 network/gpu 辅助进程无法归零（disable-features=NetworkService
 // 与 --network-service-in-process 均已实测无效），~90MB 是本方案的常驻下限。
@@ -115,6 +123,13 @@ function createWindow() {
     if (url.startsWith('http://127.0.0.1:' + port)) return { action: 'allow' };
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+  // 内存加速/安全软件的「一键加速/清理」可能只杀渲染子进程：主进程与后台服务器
+  // 都活着，窗口却只剩白屏空壳（托盘/任务栏只会聚焦这个僵尸窗口）。渲染进程一
+  // 旦异常退出，立即重载重建内容；正常关窗（clean-exit）不处理。
+  window.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    if (window && !window.isDestroyed()) window.webContents.reload();
   });
   window.loadURL('http://127.0.0.1:' + port + '/');
 }
@@ -149,6 +164,7 @@ boot().catch((error) => {
   app.quit();
   process.exitCode = 1;
 });
+}
 `,
 )
 console.log("build complete: dist/main.cjs + dist/backend.cjs + dist/headless.cjs + dist/mcp.cjs + dist/ui.html")
