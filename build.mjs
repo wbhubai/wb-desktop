@@ -119,6 +119,8 @@ function createWindow() {
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   window.on('closed', () => { window = null; }); // 关窗即销毁：renderer 释放，后台服务器与定时器不受影响
+  // 页面 <title>（无版本号）加载后会顶掉窗口标题——挡掉覆盖，保住带版本号的标题以区分多版本共存
+  window.on('page-title-updated', (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://127.0.0.1:' + port)) return { action: 'allow' };
     shell.openExternal(url);
