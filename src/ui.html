@@ -496,12 +496,26 @@ function renderModelCatalog(catalog) {
   }
   const COLLAPSED = 5;
   window.__modelCatalogFull = catalog;
-  const visible = window.__modelCatalogExpanded ? catalog : catalog.slice(0, COLLAPSED);
+  // 「能力」表头点击三态切换（默认 → 倍率正序 → 倍率倒序 → 默认）；无倍率的条目始终沉底（与方向无关）
+  let listed = catalog;
+  if (window.__modelSort === 'asc' || window.__modelSort === 'desc') {
+    const dir = window.__modelSort === 'asc' ? 1 : -1;
+    listed = catalog.slice().sort(function (a, b) {
+      const mul = function (m) { const v = Number(m.multiplier); return Number.isFinite(v) ? v : null; };
+      const av = mul(a), bv = mul(b);
+      if (av === null && bv === null) return String(a.id).localeCompare(String(b.id));
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return (av - bv) * dir || String(a.id).localeCompare(String(b.id));
+    });
+  }
+  const visible = window.__modelCatalogExpanded ? listed : listed.slice(0, COLLAPSED);
   const rows = visible.map(function (m) { return modelCatalogRow(m); }).join('');
   const toggle = catalog.length > COLLAPSED
     ? '<div class="row" style="margin-top:4px"><button class="ghost" data-act="gw-models-toggle">' + (window.__modelCatalogExpanded ? '收起（共 ' + catalog.length + ' 个）' : '展开全部（共 ' + catalog.length + ' 个）') + '</button></div>'
     : '';
-  el.innerHTML = '<table><tr><th>ID</th><th>名称</th><th>能力</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows + '</table>' + toggle;
+  const sortMark = window.__modelSort === 'asc' ? ' ▲' : window.__modelSort === 'desc' ? ' ▼' : '';
+  el.innerHTML = '<table><tr><th>ID</th><th>名称</th><th data-act="gw-model-sort" style="cursor:pointer" title="点击按倍率正序 / 倒序排序（再点一次恢复默认顺序）">能力' + sortMark + '</th><th>上下文/输出</th><th>标签</th><th>来源</th><th>最近调用成功</th><th></th></tr>' + rows + '</table>' + toggle;
 }
 function modelCatalogRow(m) {
   const sourceLabel = { remote: '官方', builtin: '内置', manual: '手动', learned: '调用学习' };
@@ -642,7 +656,7 @@ document.addEventListener('click', async (ev) => {
   if (runRow) { showRunLogDetail(Number(runRow.dataset.runlog)); return; }
   const opRow = ev.target.closest('tr[data-oplog]');
   if (opRow) { showOpLogDetail(Number(opRow.dataset.oplog)); return; }
-  const btn = ev.target.closest('button[data-act]');
+  const btn = ev.target.closest('[data-act]');
   if (!btn) return;
   const act = btn.dataset.act;
   const id = btn.dataset.id;
@@ -700,6 +714,10 @@ document.addEventListener('click', async (ev) => {
       case 'gw-key-rotate': await gwRotateKey(); break;
       case 'gw-models-sync': await gwSyncModels(btn); break;
       case 'gw-models-toggle': await gwModelsToggle(btn); break;
+      case 'gw-model-sort':
+        window.__modelSort = window.__modelSort === 'asc' ? 'desc' : (window.__modelSort === 'desc' ? null : 'asc');
+        renderModelCatalog(window.__modelCatalogFull || []);
+        break;
       case 'gw-model-add': await gwModelAdd(btn); break;
       case 'gw-model-del': await gwModelDel(btn); break;
       case 'gw-models-refresh': await gwRefreshModels(btn); break;
